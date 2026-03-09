@@ -1,0 +1,30 @@
+{
+    "camera_settings": {
+        "source_id": "IZM-HIGHWAY-01",
+        "video_path": "test_video4.mp4",
+        "display_width": 960,
+        "k_factor": 0.05
+    },
+    "model_settings": {
+        "yolo_path": "yolo26m.pt",
+        "conf_threshold": 0.15,
+        "imgsz": 1280,
+        "half": true,
+        "iou": 0.30,
+        "agnostic_nms": true
+    },
+    "lanes": {
+        "Left_Lane": {
+            "roi": [6, 212, 1094, 1090],
+            "color": [255, 0, 0]
+        },
+        "Right_Lane": {
+            "roi": [1116, 230, 1914, 1078],
+            "color": [0, 255, 0]
+        },
+        "Top_Horizon": {
+            "roi": [4, 10, 1940, 220],
+            "color": [0, 0, 255]
+        }
+    }
+}
