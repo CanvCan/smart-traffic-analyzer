@@ -34,8 +34,20 @@ SLOWDOWN_RATIO = 0.50  # Speed must drop by this fraction to flag anomaly
 SLOWDOWN_MIN_SPEED = 30.0  # px/s — below this, slowdown is expected (stop-go)
 
 # Traffic status thresholds (px/s — calibrate per camera after deployment)
-SPEED_FLOW = 80.0
-SPEED_HEAVY = 35.0
+# Typical highway camera at 0.5 scale: free-flow ~120-200 px/s, slow ~40 px/s
+SPEED_FREE = 120.0  # above this → no speed penalty
+SPEED_FLOW = 70.0  # above this → mild penalty
+SPEED_HEAVY = 25.0  # below this → heavy penalty
+
+# Occupancy thresholds (fraction of lane area covered by vehicle boxes)
+OCC_FREE = 0.25  # below → no density penalty
+OCC_FLOW = 0.40  # below → mild penalty
+OCC_HEAVY = 0.65  # above → heavy penalty
+
+# Count thresholds (vehicles visible in lane at once)
+COUNT_FREE = 7
+COUNT_FLOW = 15
+COUNT_HEAVY = 26
 
 # Snapshot interval
 SNAPSHOT_EVERY = 48  # frames
@@ -266,87 +278,133 @@ class TrafficMetrics:
     def occupancy_ratio(boxes: List[Tuple[int, int, int, int]],
                         roi_area: float) -> float:
         """
-        Fraction of ROI area covered by vehicle bounding boxes.
+        True union area of bounding boxes via sweep-line algorithm.
 
-        Uses interval-merging (sweep line) to avoid double-counting
-        when vehicles overlap:
-          1. Collect all (x1, x2, y1, y2) intervals
-          2. Merge overlapping horizontal slabs
-          3. For each slab, merge x-intervals and sum widths
+        Avoids double-counting when vehicles overlap:
+          1. Build Y-axis events (enter/leave) for each box
+          2. Sweep top-to-bottom; at each Y slab, merge active X-intervals
+          3. Accumulate slab_height * merged_x_length
 
-        This gives the true union area rather than the sum of box areas.
+        O(n^2) in worst case but n < 50 in practice — fast enough per frame.
         """
         if not boxes or roi_area <= 0:
             return 0.0
 
-        # Sort events by y1, y2 to build horizontal sweep
-        # Simplified: project onto x-axis per row bucket (fast approximation)
-        # Full sweep-line is O(n log n); for n < 50 this projection is fine.
+        # Collect unique y-boundaries and sort them
+        ys = set()
+        for x1, y1, x2, y2 in boxes:
+            ys.add(y1);
+            ys.add(y2)
+        ys = sorted(ys)
 
-        # Collect all x-intervals with y-ranges
-        events = [(y1, y2, x1, x2) for x1, y1, x2, y2 in boxes]
-        events.sort()
-
-        # Merge y-slabs and track merged x-coverage
         union_area = 0.0
-        for y1, y2, x1, x2 in events:
-            # For each box contribute its area minus overlap with previously
-            # processed boxes in the same y-range (approximate via x-union)
-            # Simple union: just accumulate and merge x intervals per box
-            union_area += (x2 - x1) * (y2 - y1)
+        for i in range(len(ys) - 1):
+            slab_y1 = ys[i]
+            slab_y2 = ys[i + 1]
+            slab_h = slab_y2 - slab_y1
+            if slab_h <= 0:
+                continue
 
-        # Fallback: use raw sum but cap at roi_area (safe upper bound)
-        # For production, replace with full sweep-line if heavy occlusion occurs
+            # Collect x-intervals of all boxes that cover this slab
+            x_intervals = []
+            for x1, y1, x2, y2 in boxes:
+                if y1 <= slab_y1 and y2 >= slab_y2:
+                    x_intervals.append((x1, x2))
+
+            if not x_intervals:
+                continue
+
+            # Merge overlapping x-intervals
+            x_intervals.sort()
+            merged_x = 0
+            cur_x1, cur_x2 = x_intervals[0]
+            for nx1, nx2 in x_intervals[1:]:
+                if nx1 <= cur_x2:
+                    cur_x2 = max(cur_x2, nx2)
+                else:
+                    merged_x += cur_x2 - cur_x1
+                    cur_x1, cur_x2 = nx1, nx2
+            merged_x += cur_x2 - cur_x1
+
+            union_area += slab_h * merged_x
+
         return round(min(union_area / roi_area, 1.0), 4)
 
     @staticmethod
     def traffic_status(avg_speed: float, vehicle_count: int,
                        occupancy: float) -> str:
         """
-        Three-factor weighted classification.
+        Weighted tri-factor traffic classification.
 
-        Each factor is scored 0 (good) to 2 (bad):
-          speed_score:   based on px/s thresholds
-          density_score: based on occupancy ratio
-          count_score:   based on number of vehicles
+        Scoring (0=good, 1=moderate, 2=bad):
+          speed_score   — weight 3  (most reliable signal)
+          density_score — weight 2  (true union area, no double-count)
+          count_score   — weight 1  (least reliable, varies by lane length)
 
-        Total score → FREE / FLOW / HEAVY / JAMMED
+        Max score = 12 → bands calibrated so normal highway flow ≈ FREE/FLOW.
+
+        Calibration guide:
+          - Record 30s of free-flow → note avg_speed → set SPEED_FREE ~= that
+          - Record congestion → note occupancy → adjust OCC_HEAVY
         """
         if vehicle_count == 0:
             return "FREE"
 
+        # Speed score (weight 3)
         speed_score = (
-            0 if avg_speed >= SPEED_FLOW else
-            1 if avg_speed >= SPEED_HEAVY else
-            2
+            0 if avg_speed >= SPEED_FREE else
+            1 if avg_speed >= SPEED_FLOW else
+            2 if avg_speed >= SPEED_HEAVY else
+            3
         )
+
+        # Occupancy score (weight 2)
         density_score = (
-            0 if occupancy < 0.10 else
-            1 if occupancy < 0.35 else
-            2
+            0 if occupancy < OCC_FREE else
+            1 if occupancy < OCC_FLOW else
+            2 if occupancy < OCC_HEAVY else
+            3
         )
+
+        # Count score (weight 1)
         count_score = (
-            0 if vehicle_count < 5 else
-            1 if vehicle_count < 12 else
-            2
+            0 if vehicle_count <= COUNT_FREE else
+            1 if vehicle_count <= COUNT_FLOW else
+            2 if vehicle_count <= COUNT_HEAVY else
+            3
         )
 
-        total = speed_score * 2 + density_score * 2 + count_score
-        # Speed and density are weighted 2x — more reliable than raw count
+        total = speed_score * 3 + density_score * 2 + count_score * 1
+        # Max possible = 3*3 + 3*2 + 3*1 = 18
 
-        if total == 0:
+        if total <= 2:
             return "FREE"
-        elif total <= 3:
-            return "FLOW"
         elif total <= 6:
+            return "FLOW"
+        elif total <= 11:
             return "HEAVY"
         else:
             return "JAMMED"
 
     @staticmethod
     def roi_total_area(lanes: List[LaneConfig]) -> float:
+        """
+        Sum of lane areas. Uses shoelace formula for polygons,
+        falls back to bounding-box area when no polygon points exist.
+        """
         total = 0.0
         for lane in lanes:
-            x1, y1, x2, y2 = lane.roi
-            total += (x2 - x1) * (y2 - y1)
+            if lane.points and len(lane.points) >= 3:
+                # Shoelace formula for polygon area
+                pts = lane.points
+                n = len(pts)
+                area = 0.0
+                for i in range(n):
+                    j = (i + 1) % n
+                    area += pts[i][0] * pts[j][1]
+                    area -= pts[j][0] * pts[i][1]
+                total += abs(area) / 2.0
+            else:
+                x1, y1, x2, y2 = lane.roi
+                total += (x2 - x1) * (y2 - y1)
         return total
