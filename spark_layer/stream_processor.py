@@ -71,7 +71,11 @@ raw_snapshots = read_topic(TOPIC_SNAPSHOTS)
 vehicles = raw_vehicles.select(
     from_json(col('raw'), VEHICLE_SCHEMA).alias('d')
 ).select('d.*') \
-    .withColumn('event_time', to_timestamp(col('timestamp').cast('long')))
+    .withColumn('event_time', to_timestamp(col('timestamp').cast('long'))) \
+    .filter(col('vehicle.lane').isNotNull())
+# ^ Defence-in-depth: event_builder already gates on lane=None at the source,
+#   but any replayed / legacy messages or schema mismatches are caught here.
+#   Applied once so all 6 queries below inherit the filter automatically.
 
 snapshots = raw_snapshots.select(
     from_json(col('raw'), SNAPSHOT_SCHEMA).alias('d')
@@ -236,7 +240,9 @@ q6_df = vehicles \
     approx_count_distinct('vehicle.id').alias('unique_vehicles')
 ).withColumn(
     'traffic_status',
-    when(col('avg_speed_px') >= 40, 'FLOW')
+    # Thresholds mirror metrics.py: SPEED_FREE=80, SPEED_FLOW=40, SPEED_HEAVY=15
+    when(col('avg_speed_px') >= 80, 'FREE')
+    .when(col('avg_speed_px') >= 40, 'FLOW')
     .when(col('avg_speed_px') >= 15, 'HEAVY')
     .otherwise('JAMMED')
 )
