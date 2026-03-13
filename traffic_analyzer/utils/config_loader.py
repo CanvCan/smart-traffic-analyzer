@@ -25,7 +25,8 @@ class ModelConfig:
 class LaneConfig:
     name: str
     roi: List[int]
-    color: List[int]
+    points: List[List[int]] = field(default_factory=list)  # polygon points (optional)
+    label_pt: List[int] = field(default_factory=list)  # manual label position [x, y]
 
 
 @dataclass
@@ -40,9 +41,9 @@ def load_config(path: str = 'config.json') -> AppConfig:
         raw = json.load(f)
 
     camera = CameraConfig(**raw["camera_settings"])
-    model  = ModelConfig(**raw["model_settings"])
-    lanes  = [
-        LaneConfig(name=name, roi=data["roi"], color=data["color"])
+    model = ModelConfig(**raw["model_settings"])
+    lanes = [
+        LaneConfig(name=name, roi=data["roi"], points=data.get("points", []), label_pt=data.get("label_pt", []))
         for name, data in raw.get("lanes", {}).items()
     ]
 
