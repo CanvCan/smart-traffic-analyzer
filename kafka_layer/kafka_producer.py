@@ -78,9 +78,29 @@ class TrafficProducer:
 
     @staticmethod
     def _send_console(event_type: str, json_str: str) -> None:
-        """Only snapshots are printed — vehicle events would spam the console."""
+        """
+        Console fallback when Kafka is unavailable.
+        Snapshots are printed in full; vehicle events are summarised
+        (one line each) to avoid console spam while still being visible.
+        """
         if event_type == "traffic_snapshot":
             print(f"[SNAPSHOT] {json_str}")
+        elif event_type == "vehicle_detected":
+            try:
+                import json as _json
+                ev = _json.loads(json_str)
+                v = ev.get("vehicle", {})
+                k = ev.get("kinematics", {})
+                print(
+                    f"[VEHICLE] "
+                    f"ID:{v.get('id'):>4}  "
+                    f"{v.get('class', '?'):<12}  "
+                    f"Lane: {str(v.get('lane', '?')):<14}  "
+                    f"Speed: {k.get('speed_px_per_sec', 0):>7.1f} px/s  "
+                    f"Stopped: {k.get('is_stopped', False)}"
+                )
+            except Exception:
+                print(f"[VEHICLE] {json_str}")
 
     @staticmethod
     def _serialize(event: dict) -> str:

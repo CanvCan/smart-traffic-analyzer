@@ -76,6 +76,10 @@ SNAPSHOT_SCHEMA = StructType([
         StructField('occupancy_ratio', DoubleType()),
     ])),
 
+    # IMPORTANT: lane_counts field names must match lane names defined in app config.
+    # Spark schemas are compile-time static — if you rename or add lanes in the
+    # config, update these StructFields to match, otherwise the snapshot stream
+    # will silently produce nulls for mismatched lane names.
     StructField('lane_counts', StructType([
         StructField('Right_Lane', IntegerType()),
         StructField('Middle_Lane', IntegerType()),
