@@ -23,6 +23,15 @@ from traffic_analyzer.visualization.colors import CLASS_LABELS
 
 HEAVY_CLASSES = {5, 7}  # Bus=5, Truck=7
 
+# Minimum frames a track must be observed before a vehicle_detected event is
+# emitted. This guards against:
+#   - Partially-entered bounding boxes (first 1-2 frames the bbox clips the edge)
+#   - ByteTrack's minimum_consecutive_frames warm-up period
+#   - Lane assignment returning None due to centroid still outside all polygons
+# Value must be > tracker's minimum_consecutive_frames (default=3) so the track
+# is confirmed AND its centroid is stable before we send anything to Kafka.
+MIN_FRAMES_BEFORE_EVENT = 5
+
 
 class EventBuilder:
     """
@@ -35,11 +44,16 @@ class EventBuilder:
             print(self._event_builder.to_json(e))   # or send to Kafka
     """
 
-    def __init__(self, config: AppConfig, fps: float = 48.0):
+    def __init__(self, config: AppConfig):
         self._cfg = config
-        self._fps = fps
         self._vm = VehicleMetrics()
         self._roi_area = TrafficMetrics.roi_total_area(config.lanes)
+
+    @property
+    def vm(self) -> VehicleMetrics:
+        """Expose VehicleMetrics so Analyzer can update it directly,
+        keeping a single source of truth for all kinematic state."""
+        return self._vm
 
     # ── MAIN ENTRY POINT ─────────────────────────────────────────────────────
 
@@ -63,12 +77,18 @@ class EventBuilder:
             box = track["box"]
             active_ids.add(tid)
 
-            self._vm.update(tid, box, frame_id, frame_height)
+            # Note: vm.update() is called by Analyzer before this method,
+            # so kinematic state is already current for this frame.
             vehicle_event = self._build_vehicle_event(tid, cls_id, box, frame_id)
 
-            if vehicle_event["residence"]["frames_in_roi"] < 3:
+            # Gate 1 — bbox not yet stable (partially entered frame / tracker warmup)
+            if vehicle_event["residence"]["frames_in_roi"] < MIN_FRAMES_BEFORE_EVENT:
                 continue
 
+            # Gate 2 — centroid still outside all lane polygons
+            # This is a safety net; Gate 1 should eliminate most of these cases.
+            # If lane is still None after MIN_FRAMES_BEFORE_EVENT frames the vehicle
+            # is genuinely outside all defined lanes — skip it.
             if vehicle_event["vehicle"]["lane"] is None:
                 continue
 

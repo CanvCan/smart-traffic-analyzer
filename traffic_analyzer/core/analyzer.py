@@ -2,7 +2,6 @@ import cv2
 import supervision as sv
 from traffic_analyzer.core.detector import BaseDetector
 from traffic_analyzer.core.tracker import BaseTracker
-from traffic_analyzer.utils.memory import TrackMemory
 from traffic_analyzer.utils.config_loader import AppConfig
 from traffic_analyzer.visualization.renderer import Renderer, GHOST_FRAMES
 from traffic_analyzer.core.event_builder import EventBuilder
@@ -16,12 +15,15 @@ class Analyzer:
         self._cfg = config
         self._detector = detector
         self._tracker = tracker
-        self._memory = TrackMemory(history_size=15, max_lost_frames=150)
         self._renderer = Renderer()
         self._event_builder = EventBuilder(config)
-        self._producer = TrafficProducer()  # ← tek değişen satır
+        self._producer = TrafficProducer()
         self._frame_count = 0
         self._paused = False
+        # Track last known box/class per tid for ghost rendering
+        self._last_box: dict = {}
+        self._last_cls: dict = {}
+        self._last_seen: dict = {}  # tid -> frame_count when last active
 
     def run(self) -> None:
         cap = cv2.VideoCapture(self._cfg.camera.video_path)
@@ -53,7 +55,9 @@ class Analyzer:
                     cv2.imshow("Smart Traffic Analyzer",
                                cv2.resize(frame, (dw, int(dw * h / w))))
 
-                key = cv2.waitKey(1) & 0xFF
+                # Use longer wait when paused to avoid CPU spin
+                wait_ms = 100 if self._paused else 1
+                key = cv2.waitKey(wait_ms) & 0xFF
                 if key == ord('q'):
                     break
                 elif key == ord(' '):
@@ -63,7 +67,7 @@ class Analyzer:
         finally:
             cap.release()
             cv2.destroyAllWindows()
-            self._producer.close()  # ← tek değişen satır
+            self._producer.close()
             print("[Analyzer] Shutdown complete.")
 
     def _process_frame(self, frame) -> None:
@@ -83,7 +87,11 @@ class Analyzer:
             box = (x1, y1, x2, y2)
 
             active_ids.add(tid)
-            self._memory.update(tid, cls_id, box, self._frame_count)
+            # Single source of truth: VehicleMetrics inside EventBuilder
+            self._event_builder.vm.update(tid, box, self._frame_count, frame_h)
+            self._last_box[tid] = box
+            self._last_cls[tid] = cls_id
+            self._last_seen[tid] = self._frame_count
             active_tracks.append({"tid": tid, "cls_id": cls_id, "box": box})
 
         # Produce events
@@ -91,24 +99,32 @@ class Analyzer:
             self._frame_count, frame_h, active_tracks
         )
         for event in events:
-            self._producer.send(event)  # ← tek değişen satır
+            self._producer.send(event)
 
         # Visualisation
         self._renderer.draw_lanes(frame, self._cfg.lanes)
 
         for tid in active_ids:
-            box = self._memory.get_box(tid)
-            cls = self._memory.get_cls(tid)
+            box = self._last_box.get(tid)
+            cls = self._last_cls.get(tid)
             if box:
                 self._renderer.draw_vehicle(frame, *box, tid, cls)
 
-        for tid in self._memory.all_ids():
-            lost = self._memory.get_lost_frames(tid, self._frame_count)
-            if 0 < lost <= GHOST_FRAMES:
-                box = self._memory.get_box(tid)
-                cls = self._memory.get_cls(tid)
+        # Ghost rendering for recently lost tracks
+        for tid, last_frame in list(self._last_seen.items()):
+            lost = self._frame_count - last_frame
+            if 0 < lost <= GHOST_FRAMES and tid not in active_ids:
+                box = self._last_box.get(tid)
+                cls = self._last_cls.get(tid, 2)
                 if box:
-                    self._renderer.draw_vehicle(frame, *box, tid, cls or 2, ghost=True)
+                    self._renderer.draw_vehicle(frame, *box, tid, cls, ghost=True)
 
         self._renderer.draw_legend(frame)
-        self._memory.collect_garbage(self._frame_count)
+
+        # Cleanup stale ghost state
+        stale = [tid for tid, lf in self._last_seen.items()
+                 if self._frame_count - lf > GHOST_FRAMES]
+        for tid in stale:
+            self._last_box.pop(tid, None)
+            self._last_cls.pop(tid, None)
+            self._last_seen.pop(tid, None)
