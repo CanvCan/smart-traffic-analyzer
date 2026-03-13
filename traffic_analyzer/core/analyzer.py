@@ -6,20 +6,22 @@ from traffic_analyzer.utils.memory import TrackMemory
 from traffic_analyzer.utils.config_loader import AppConfig
 from traffic_analyzer.visualization.renderer import Renderer, GHOST_FRAMES
 from traffic_analyzer.core.event_builder import EventBuilder
+from kafka_layer.kafka_producer import TrafficProducer
 
 
 class Analyzer:
     def __init__(self, config: AppConfig,
                  detector: BaseDetector,
                  tracker: BaseTracker):
-        self._cfg           = config
-        self._detector      = detector
-        self._tracker       = tracker
-        self._memory        = TrackMemory(history_size=15, max_lost_frames=150)
-        self._renderer      = Renderer()
+        self._cfg = config
+        self._detector = detector
+        self._tracker = tracker
+        self._memory = TrackMemory(history_size=15, max_lost_frames=150)
+        self._renderer = Renderer()
         self._event_builder = EventBuilder(config)
-        self._frame_count   = 0
-        self._paused        = False
+        self._producer = TrafficProducer()  # ← tek değişen satır
+        self._frame_count = 0
+        self._paused = False
 
     def run(self) -> None:
         cap = cv2.VideoCapture(self._cfg.camera.video_path)
@@ -44,7 +46,8 @@ class Analyzer:
                         self._process_frame(frame)
                     except Exception as e:
                         print(f"[ERROR] Frame {self._frame_count}: {e}")
-                        import traceback; traceback.print_exc()
+                        import traceback
+                        traceback.print_exc()
 
                     h, w = frame.shape[:2]
                     cv2.imshow("Smart Traffic Analyzer",
@@ -60,35 +63,35 @@ class Analyzer:
         finally:
             cap.release()
             cv2.destroyAllWindows()
+            self._producer.close()  # ← tek değişen satır
             print("[Analyzer] Shutdown complete.")
 
     def _process_frame(self, frame) -> None:
         frame_h = frame.shape[0]
 
-        results    = self._detector.detect(frame)
+        results = self._detector.detect(frame)
         detections = sv.Detections.from_ultralytics(results)
         detections = self._tracker.update(detections, frame)
 
         active_tracks = []
-        active_ids    = set()
+        active_ids = set()
 
         for i in range(len(detections)):
-            tid             = int(detections.tracker_id[i])
-            cls_id          = int(detections.class_id[i])
+            tid = int(detections.tracker_id[i])
+            cls_id = int(detections.class_id[i])
             x1, y1, x2, y2 = map(int, detections.xyxy[i])
-            box             = (x1, y1, x2, y2)
+            box = (x1, y1, x2, y2)
 
             active_ids.add(tid)
             self._memory.update(tid, cls_id, box, self._frame_count)
             active_tracks.append({"tid": tid, "cls_id": cls_id, "box": box})
 
-        # Produce events (console until Kafka is wired)
+        # Produce events
         events = self._event_builder.update(
             self._frame_count, frame_h, active_tracks
         )
         for event in events:
-            if event["event_type"] == "traffic_snapshot":
-                print(f"[SNAPSHOT] {self._event_builder.to_json(event)}")
+            self._producer.send(event)  # ← tek değişen satır
 
         # Visualisation
         self._renderer.draw_lanes(frame, self._cfg.lanes)
