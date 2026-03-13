@@ -22,12 +22,13 @@ from traffic_analyzer.utils.config_loader import LaneConfig
 # ── TUNABLE CONSTANTS ────────────────────────────────────────────────────────
 
 EMA_ALPHA = 0.25  # EMA smoothing factor for speed (0=heavy smooth, 1=raw)
-POSITION_HISTORY = 30  # Max position history per track
+POSITION_HISTORY = 45  # Max position history per track (must be >= STOP_MIN_FRAMES)
 SPEED_HISTORY = 30  # Max speed history per track
 DIRECTION_WINDOW = 10  # Positions used for direction regression
 STOP_WINDOW = 30  # Frames to analyse for stopped detection
 STOP_STD_THRESHOLD = 3.0  # Max positional std-dev (px) to be "stopped"
-STOP_MIN_FRAMES = 40  # Must be in stop window for this many frames
+STOP_MIN_FRAMES = 30  # Must have at least this many frames before stopped check
+# Note: must be <= POSITION_HISTORY and <= STOP_WINDOW
 SLOWDOWN_PAST_WIN = 15  # Past window for slowdown comparison
 SLOWDOWN_NOW_WIN = 5  # Current window for slowdown comparison
 SLOWDOWN_RATIO = 0.50  # Speed must drop by this fraction to flag anomaly
@@ -183,13 +184,17 @@ class VehicleMetrics:
         """
         Seconds since the vehicle was last moving.
         Returns 0.0 if not stopped.
+
+        Uses the oldest available position capped to STOP_MIN_FRAMES
+        so this is safe regardless of deque length.
         """
         if not self.is_stopped(tid):
             return 0.0
         pos = list(self._pos[tid])
         if len(pos) < 2:
             return 0.0
-        return round(pos[-1][2] - pos[-STOP_MIN_FRAMES][2], 2)
+        lookback = min(STOP_MIN_FRAMES, len(pos))
+        return round(pos[-1][2] - pos[-lookback][2], 2)
 
     # ── SUDDEN SLOWDOWN ──────────────────────────────────────────────────────
 
