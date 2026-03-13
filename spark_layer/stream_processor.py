@@ -26,7 +26,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     from_json, col, window,
     count, avg, sum as _sum, max as _max, min as _min,
-    round as _round, to_timestamp, when, countDistinct
+    round as _round, to_timestamp, when, approx_count_distinct
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -34,8 +34,8 @@ BOOTSTRAP_SERVERS = 'localhost:9092'
 TOPIC_VEHICLES = 'traffic.vehicles'
 TOPIC_SNAPSHOTS = 'traffic.snapshots'
 CHECKPOINT_BASE = '/tmp/traffic-checkpoint'
-WATERMARK_DELAY = '10 seconds'
-TRIGGER_INTERVAL = '10 seconds'
+WATERMARK_DELAY = '12 seconds'
+TRIGGER_INTERVAL = '15 seconds'
 
 # ── Spark Session ────────────────────────────────────────────────────────────
 os.environ.setdefault('PYSPARK_PYTHON', 'python')
@@ -223,6 +223,40 @@ q5 = q5_df.writeStream \
     .start()
 
 print("[Spark] Q5 started — traffic status transitions (3 min / 1 min sliding)")
+
+# ── Q6 — Lane-based Traffic Status (sliding 3 min / 1 min) ───────────────────
+# Traffic flow status evaluated separately for each lane
+q6_df = vehicles \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '3 minutes', '1 minute'),
+    col('vehicle.lane').alias('lane'),
+).agg(
+    _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
+    approx_count_distinct('vehicle.id').alias('unique_vehicles')
+).withColumn(
+    'traffic_status',
+    when(col('avg_speed_px') >= 40, 'FLOW')
+    .when(col('avg_speed_px') >= 15, 'HEAVY')
+    .otherwise('JAMMED')
+)
+
+q6 = q6_df.writeStream \
+    .outputMode('update') \
+    .format('console') \
+    .option('truncate', False) \
+    .trigger(processingTime=TRIGGER_INTERVAL) \
+    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q6') \
+    .queryName('Q6_lane_traffic_status') \
+    .start()
+
+print("[Spark] Q6 started — lane-based traffic status (3 min / 1 min sliding)")
+
+print()
+print("=" * 60)
+print("  All 6 queries running. Press Ctrl+C to stop.")
+print("=" * 60)
+print()
 
 # ── Keep alive ───────────────────────────────────────────────────────────────
 try:

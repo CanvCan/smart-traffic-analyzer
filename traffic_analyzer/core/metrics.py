@@ -35,9 +35,9 @@ SLOWDOWN_MIN_SPEED = 30.0  # px/s — below this, slowdown is expected (stop-go)
 
 # Traffic status thresholds (px/s — calibrate per camera after deployment)
 # Typical highway camera at 0.5 scale: free-flow ~120-200 px/s, slow ~40 px/s
-SPEED_FREE = 120.0  # above this → no speed penalty
-SPEED_FLOW = 70.0  # above this → mild penalty
-SPEED_HEAVY = 25.0  # below this → heavy penalty
+SPEED_FREE = 80.0  # above this → no speed penalty
+SPEED_FLOW = 40.0  # above this → mild penalty
+SPEED_HEAVY = 15.0  # below this → heavy penalty
 
 # Occupancy thresholds (fraction of lane area covered by vehicle boxes)
 OCC_FREE = 0.25  # below → no density penalty
@@ -45,9 +45,9 @@ OCC_FLOW = 0.40  # below → mild penalty
 OCC_HEAVY = 0.65  # above → heavy penalty
 
 # Count thresholds (vehicles visible in lane at once)
-COUNT_FREE = 7
-COUNT_FLOW = 15
-COUNT_HEAVY = 26
+COUNT_FREE = 10
+COUNT_FLOW = 25
+COUNT_HEAVY = 40
 
 # Snapshot interval
 SNAPSHOT_EVERY = 48  # frames
