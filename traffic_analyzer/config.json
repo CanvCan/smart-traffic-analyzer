@@ -6,7 +6,7 @@
         "k_factor": 0.05
     },
     "model_settings": {
-        "yolo_path": "yolo26m.pt",
+        "yolo_path": "yolov8m.pt",
         "conf_threshold": 0.15,
         "imgsz": 1280,
         "half": true,
