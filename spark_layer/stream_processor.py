@@ -272,8 +272,8 @@ q6_df = vehicles \
     approx_count_distinct('vehicle.id').alias('unique_vehicles'),
 ).withColumn(
     'traffic_status',
-    # Thresholds mirror metrics.py: SPEED_FREE=80, SPEED_FLOW=40, SPEED_HEAVY=15
-    when(col('avg_speed_px') >= 80, 'FREE')
+    # Thresholds mirror metrics.py: SPEED_FREE=65, SPEED_FLOW=40, SPEED_JAMMED=15
+    when(col('avg_speed_px') >= 65, 'FREE')
     .when(col('avg_speed_px') >= 40, 'FLOW')
     .when(col('avg_speed_px') >= 15, 'HEAVY')
     .otherwise('JAMMED')

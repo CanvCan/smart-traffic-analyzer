@@ -36,19 +36,22 @@ SLOWDOWN_MIN_SPEED = 30.0  # px/s — below this, slowdown is expected (stop-go)
 
 # Traffic status thresholds (px/s — calibrate per camera after deployment)
 # Typical highway camera at 0.5 scale: free-flow ~120-200 px/s, slow ~40 px/s
-SPEED_FREE = 80.0  # above this → no speed penalty
+SPEED_FREE = 65.0  # above this → no speed penalty
 SPEED_FLOW = 40.0  # above this → mild penalty
-SPEED_HEAVY = 15.0  # below this → heavy penalty
+SPEED_HEAVY = 25.0  # below this → heavy penalty
+SPEED_JAMMED = 15.0
 
 # Occupancy thresholds (fraction of lane area covered by vehicle boxes)
-OCC_FREE = 0.25  # below → no density penalty
-OCC_FLOW = 0.40  # below → mild penalty
-OCC_HEAVY = 0.65  # above → heavy penalty
+OCC_FREE = 0.20  # below → no density penalty
+OCC_FLOW = 0.35  # below → mild penalty
+OCC_HEAVY = 0.55  # above → heavy penalty
+OCC_JAMMED = 0.75
 
 # Count thresholds (vehicles visible in lane at once)
 COUNT_FREE = 10
-COUNT_FLOW = 25
-COUNT_HEAVY = 40
+COUNT_FLOW = 18
+COUNT_HEAVY = 25
+COUNT_JAMMED = 35
 
 # Snapshot interval
 SNAPSHOT_EVERY = 48  # frames
@@ -243,7 +246,7 @@ class VehicleMetrics:
         for tid in list(self._pos.keys()):
             if tid not in active_ids:
                 del self._pos[tid]
-                del self._speed[tid]
+                self._speed.pop(tid, None)
                 self._ema.pop(tid, None)
                 self._entry_frame.pop(tid, None)
                 self._entry_time.pop(tid, None)
@@ -264,10 +267,8 @@ class TrafficMetrics:
         falls back to point-in-rectangle using roi bounding box.
         Returns the name of the matching lane or None.
         """
-        import numpy as np
         for lane in lanes:
             if lane.points and len(lane.points) >= 3:
-                # Ray-casting / cv2.pointPolygonTest
                 import cv2 as _cv2
                 pts = np.array(lane.points, dtype=np.float32)
                 result = _cv2.pointPolygonTest(pts, (float(cx), float(cy)), False)
@@ -341,12 +342,12 @@ class TrafficMetrics:
         """
         Weighted tri-factor traffic classification.
 
-        Scoring (0=good, 1=moderate, 2=bad):
+        Scoring (0=best, 4=worst):
           speed_score   — weight 3  (most reliable signal)
           density_score — weight 2  (true union area, no double-count)
           count_score   — weight 1  (least reliable, varies by lane length)
 
-        Max score = 12 → bands calibrated so normal highway flow ≈ FREE/FLOW.
+        Max score = 24 → bands calibrated so normal highway flow ≈ FREE/FLOW.
 
         Calibration guide:
           - Record 30s of free-flow → note avg_speed → set SPEED_FREE ~= that
@@ -360,7 +361,8 @@ class TrafficMetrics:
             0 if avg_speed >= SPEED_FREE else
             1 if avg_speed >= SPEED_FLOW else
             2 if avg_speed >= SPEED_HEAVY else
-            3
+            3 if avg_speed >= SPEED_JAMMED else
+            4
         )
 
         # Occupancy score (weight 2)
@@ -368,7 +370,8 @@ class TrafficMetrics:
             0 if occupancy < OCC_FREE else
             1 if occupancy < OCC_FLOW else
             2 if occupancy < OCC_HEAVY else
-            3
+            3 if occupancy < OCC_JAMMED else
+            4
         )
 
         # Count score (weight 1)
@@ -376,17 +379,18 @@ class TrafficMetrics:
             0 if vehicle_count <= COUNT_FREE else
             1 if vehicle_count <= COUNT_FLOW else
             2 if vehicle_count <= COUNT_HEAVY else
-            3
+            3 if vehicle_count <= COUNT_JAMMED else
+            4
         )
 
         total = speed_score * 3 + density_score * 2 + count_score * 1
-        # Max possible = 3*3 + 3*2 + 3*1 = 18
+        # Max possible = 4*3 + 4*2 + 4*1 = 24  →  FREE ≤ 4, FLOW ≤ 9, HEAVY ≤ 16, else JAMMED
 
-        if total <= 2:
+        if total <= 4:
             return "FREE"
-        elif total <= 6:
+        elif total <= 9:
             return "FLOW"
-        elif total <= 11:
+        elif total <= 16:
             return "HEAVY"
         else:
             return "JAMMED"

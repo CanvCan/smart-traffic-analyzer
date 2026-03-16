@@ -85,4 +85,13 @@ SNAPSHOT_SCHEMA = StructType([
         StructField('Middle_Lane', IntegerType()),
         StructField('Left_Lane', IntegerType()),
     ])),
+
+    StructField('anomalies', ArrayType(StructType([
+        StructField('vehicle_id', IntegerType()),
+        StructField('class', StringType()),
+        StructField('type', StringType()),
+        StructField('stop_seconds', DoubleType()),
+        StructField('speed_px', DoubleType()),
+        StructField('lane', StringType()),
+    ]))),
 ])

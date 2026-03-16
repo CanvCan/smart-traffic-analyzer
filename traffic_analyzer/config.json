@@ -7,7 +7,7 @@
     },
     "model_settings": {
         "yolo_path": "yolov8m.pt",
-        "conf_threshold": 0.15,
+        "conf_threshold": 0.20,
         "imgsz": 1280,
         "half": true,
         "iou": 0.3,
