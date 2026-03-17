@@ -78,6 +78,9 @@ class TrafficProducer:
 
     @staticmethod
     def _send_console(event_type: str, json_str: str) -> None:
+        """
+        Only snapshots are printed — vehicle events would spam the console.
+        """
         if event_type == "traffic_snapshot":
             print(f"[SNAPSHOT] {json_str}")
 
@@ -108,7 +111,8 @@ class TrafficProducer:
                 print(f"[Kafka] Connected → {BOOTSTRAP_SERVERS}")
                 return producer
             except NoBrokersAvailable:
-                print(f"[Kafka] No broker — console-only mode.")
+                print(f"[Kafka] No broker at {BOOTSTRAP_SERVERS} "
+                      f"— running in console-only mode.")
                 return None
             except Exception as e:
                 print(f"[Kafka] Could not connect ({e}) — console-only mode.")

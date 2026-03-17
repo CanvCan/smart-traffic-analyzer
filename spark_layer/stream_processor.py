@@ -1,15 +1,22 @@
 """
 spark_layer/stream_processor.py
 
-Reads traffic events from Kafka and performs all planned windowed analyses.
+Reads traffic events from Kafka and performs all windowed analyses.
 
-Analysis queries (as defined in integration_plan.pdf):
-  Q1 — Lane-based vehicle count       Tumbling 1 min
-  Q2 — Average speed per lane + class Sliding  2 min / 30 sec
-  Q3 — Heavy vehicle ratio            Tumbling 5 min
-  Q4 — Anomaly density                Tumbling 1 min
-  Q5 — Traffic status transitions     Sliding  3 min / 1 min
-  Q6 — Lane-based Traffic Status      Sliding  3 min / 1 min
+Queries:
+  Q1  — Lane-based vehicle count       Tumbling 1 min
+  Q2  — Speed tracking per lane+class  Sliding  2 min / 30 sec
+  Q3  — Heavy vehicle ratio            Tumbling 5 min
+  Q4  — Anomaly density                Tumbling 1 min
+  Q5  — Traffic status transitions     Sliding  3 min / 1 min
+  Q6  — Lane speed metrics             Sliding  3 min / 1 min
+  Q7  — Flow rate per lane             Tumbling 1 min
+  Q8  — Dwell time per lane            Tumbling 2 min
+  Q9  — Lane occupancy                 Tumbling 1 min
+  Q10 — Direction analysis             Tumbling 1 min
+  Q11 — Vehicle class breakdown        Tumbling 1 min
+
+All measurements include camera_id as a tag for multi-camera support.
 
 Usage:
     python spark_layer/stream_processor.py
@@ -17,24 +24,28 @@ Usage:
 
 import os
 import sys
+import tempfile
 
 # ── Path setup — allows running from project root ────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schemas import VEHICLE_SCHEMA, SNAPSHOT_SCHEMA
-from influx_sink import write_q1, write_q2, write_q3, write_q4, write_q5, write_q6
+from influx_sink import (
+    write_q1, write_q2, write_q3, write_q4, write_q5, write_q6,
+    write_q7, write_q8, write_q9, write_q10, write_q11,
+)
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     from_json, col, window,
-    count, avg, sum as _sum, max as _max, min as _min,
-    round as _round, to_timestamp, when, approx_count_distinct
+    count, avg, max as _max, min as _min, stddev as _stddev,
+    round as _round, to_timestamp, when, approx_count_distinct,
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
 BOOTSTRAP_SERVERS = 'localhost:9092'
 TOPIC_VEHICLES = 'traffic.vehicles'
 TOPIC_SNAPSHOTS = 'traffic.snapshots'
-CHECKPOINT_BASE = '/tmp/traffic-checkpoint'
+CHECKPOINT_BASE = os.path.join(tempfile.gettempdir(), 'traffic-checkpoint')
 WATERMARK_DELAY = '12 seconds'
 TRIGGER_INTERVAL = '15 seconds'
 
@@ -74,9 +85,6 @@ vehicles = raw_vehicles.select(
 ).select('d.*') \
     .withColumn('event_time', to_timestamp(col('timestamp').cast('long'))) \
     .filter(col('vehicle.lane').isNotNull())
-# ^ Defence-in-depth: event_builder already gates on lane=None at the source,
-#   but any replayed / legacy messages or schema mismatches are caught here.
-#   Applied once so all 6 queries below inherit the filter automatically.
 
 snapshots = raw_snapshots.select(
     from_json(col('raw'), SNAPSHOT_SCHEMA).alias('d')
@@ -85,50 +93,57 @@ snapshots = raw_snapshots.select(
 
 print("[Spark] Schemas loaded and streams parsed.")
 
+
+def _start(df, write_fn, name, mode='update'):
+    """Start console + InfluxDB sinks for a query dataframe."""
+    df.writeStream \
+        .outputMode(mode) \
+        .format('console') \
+        .option('truncate', False) \
+        .option('numRows', 20) \
+        .trigger(processingTime=TRIGGER_INTERVAL) \
+        .option('checkpointLocation', f'{CHECKPOINT_BASE}/{name}_console') \
+        .queryName(f'{name}_console') \
+        .start()
+
+    df.writeStream \
+        .outputMode(mode) \
+        .foreachBatch(write_fn) \
+        .trigger(processingTime=TRIGGER_INTERVAL) \
+        .option('checkpointLocation', f'{CHECKPOINT_BASE}/{name}_influx') \
+        .queryName(f'{name}_influx') \
+        .start()
+
+    print(f"[Spark] {name} started.")
+
+
 # ── Q1 — Lane-based vehicle count (tumbling 1 min) ───────────────────────────
 q1_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '1 minute'),
+    col('camera_id'),
     col('vehicle.lane').alias('lane'),
     col('vehicle.class').alias('vehicle_class'),
 ).agg(
-    count('*').alias('vehicle_count'),
+    approx_count_distinct('vehicle.id').alias('vehicle_count'),
     _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
     _round(_max('kinematics.speed_px_per_sec'), 2).alias('max_speed_px'),
     _round(_min('kinematics.speed_px_per_sec'), 2).alias('min_speed_px'),
 )
+_start(q1_df, write_q1, 'Q1')
 
-q1_console = q1_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .option('numRows', 20) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q1_console') \
-    .queryName('Q1_console') \
-    .start()
-
-q1_influx = q1_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q1) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q1_influx') \
-    .queryName('Q1_influx') \
-    .start()
-
-print("[Spark] Q1 started — lane-based vehicle count (1 min tumbling)")
-
-# ── Q2 — Average speed per lane + class (sliding 2 min / 30 sec) ─────────────
+# ── Q2 — Speed tracking per lane + class (sliding 2 min / 30 sec) ────────────
 q2_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '2 minutes', '30 seconds'),
+    col('camera_id'),
     col('vehicle.lane').alias('lane'),
     col('vehicle.class').alias('vehicle_class'),
 ).agg(
     _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
-    count('*').alias('sample_count'),
+    _round(_stddev('kinematics.speed_px_per_sec'), 2).alias('speed_stddev_px'),
     _round(
         avg(when(col('kinematics.is_stopped') == True, 1).otherwise(0)) * 100, 1
     ).alias('stopped_pct'),
@@ -136,101 +151,58 @@ q2_df = vehicles \
         avg(when(col('kinematics.is_slow') == True, 1).otherwise(0)) * 100, 1
     ).alias('slow_pct'),
 )
-
-q2_console = q2_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .option('numRows', 20) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q2_console') \
-    .queryName('Q2_console') \
-    .start()
-
-q2_influx = q2_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q2) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q2_influx') \
-    .queryName('Q2_influx') \
-    .start()
-
-print("[Spark] Q2 started — avg speed per lane + class (2 min / 30 sec sliding)")
+_start(q2_df, write_q2, 'Q2')
 
 # ── Q3 — Heavy vehicle ratio (tumbling 5 min) ────────────────────────────────
 q3_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '5 minutes'),
+    col('camera_id'),
     col('vehicle.lane').alias('lane'),
 ).agg(
-    count('*').alias('total_vehicles'),
-    _sum(when(col('vehicle.is_heavy') == True, 1).otherwise(0)).alias('heavy_count'),
-    _sum(when(col('vehicle.class') == 'Bus', 1).otherwise(0)).alias('bus_count'),
-    _sum(when(col('vehicle.class') == 'Truck', 1).otherwise(0)).alias('truck_count'),
+    approx_count_distinct('vehicle.id').alias('total_vehicles'),
+    approx_count_distinct(
+        when(col('vehicle.is_heavy') == True, col('vehicle.id'))
+    ).alias('heavy_count'),
+    approx_count_distinct(
+        when(col('vehicle.class') == 'Bus', col('vehicle.id'))
+    ).alias('bus_count'),
+    approx_count_distinct(
+        when(col('vehicle.class') == 'Truck', col('vehicle.id'))
+    ).alias('truck_count'),
     _round(
-        _sum(when(col('vehicle.is_heavy') == True, 1).otherwise(0)) /
-        count('*') * 100, 2
+        approx_count_distinct(
+            when(col('vehicle.is_heavy') == True, col('vehicle.id'))
+        ) / approx_count_distinct('vehicle.id') * 100, 2
     ).alias('heavy_ratio_pct'),
 )
-
-q3_console = q3_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q3_console') \
-    .queryName('Q3_console') \
-    .start()
-
-q3_influx = q3_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q3) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q3_influx') \
-    .queryName('Q3_influx') \
-    .start()
-
-print("[Spark] Q3 started — heavy vehicle ratio (5 min tumbling)")
+_start(q3_df, write_q3, 'Q3')
 
 # ── Q4 — Anomaly density per lane (tumbling 1 min) ───────────────────────────
+# withWatermark before filter — watermark advances on all vehicle events,
+# not just anomalies (which can be sparse).
 q4_df = vehicles \
-    .filter(col('anomaly.is_anomaly') == True) \
     .withWatermark('event_time', WATERMARK_DELAY) \
+    .filter(col('anomaly.is_anomaly') == True) \
     .groupBy(
     window('event_time', '1 minute'),
+    col('camera_id'),
     col('vehicle.lane').alias('lane'),
     col('anomaly.type').alias('anomaly_type'),
 ).agg(
-    count('*').alias('anomaly_count'),
+    approx_count_distinct('vehicle.id').alias('anomaly_count'),
     _round(avg('anomaly.stop_seconds'), 1).alias('avg_stop_seconds'),
     _round(_max('anomaly.stop_seconds'), 1).alias('max_stop_seconds'),
 )
-
-q4_console = q4_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q4_console') \
-    .queryName('Q4_console') \
-    .start()
-
-q4_influx = q4_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q4) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q4_influx') \
-    .queryName('Q4_influx') \
-    .start()
-
-print("[Spark] Q4 started — anomaly density per lane (1 min tumbling)")
+_start(q4_df, write_q4, 'Q4')
 
 # ── Q5 — Traffic status transitions (sliding 3 min / 1 min) ──────────────────
 q5_df = snapshots \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '3 minutes', '1 minute'),
+    col('camera_id'),
     col('density.status').alias('traffic_status'),
 ).agg(
     count('*').alias('snapshot_count'),
@@ -241,66 +213,103 @@ q5_df = snapshots \
     _round(avg('density.occupancy_ratio'), 4).alias('avg_occupancy'),
     _round(avg('counts.heavy_vehicle_ratio') * 100, 2).alias('avg_heavy_pct'),
 )
+_start(q5_df, write_q5, 'Q5')
 
-q5_console = q5_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q5_console') \
-    .queryName('Q5_console') \
-    .start()
-
-q5_influx = q5_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q5) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q5_influx') \
-    .queryName('Q5_influx') \
-    .start()
-
-print("[Spark] Q5 started — traffic status transitions (3 min / 1 min sliding)")
-
-# ── Q6 — Lane-based Traffic Status (sliding 3 min / 1 min) ───────────────────
+# ── Q6 — Lane speed metrics (sliding 3 min / 1 min) ──────────────────────────
 q6_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '3 minutes', '1 minute'),
+    col('camera_id'),
     col('vehicle.lane').alias('lane'),
 ).agg(
     _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
+    _round(_stddev('kinematics.speed_px_per_sec'), 2).alias('speed_stddev_px'),
     approx_count_distinct('vehicle.id').alias('unique_vehicles'),
-).withColumn(
-    'traffic_status',
-    # Thresholds mirror metrics.py: SPEED_FREE=65, SPEED_FLOW=40, SPEED_JAMMED=15
-    when(col('avg_speed_px') >= 65, 'FREE')
-    .when(col('avg_speed_px') >= 40, 'FLOW')
-    .when(col('avg_speed_px') >= 15, 'HEAVY')
-    .otherwise('JAMMED')
+    _round(
+        avg(when(col('kinematics.is_stopped') == True, 1).otherwise(0)) * 100, 1
+    ).alias('stopped_pct'),
 )
+_start(q6_df, write_q6, 'Q6')
 
-q6_console = q6_df.writeStream \
-    .outputMode('update') \
-    .format('console') \
-    .option('truncate', False) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q6_console') \
-    .queryName('Q6_console') \
-    .start()
+# ── Q7 — Flow rate per lane (tumbling 1 min) ─────────────────────────────────
+q7_df = vehicles \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '1 minute'),
+    col('camera_id'),
+    col('vehicle.lane').alias('lane'),
+).agg(
+    approx_count_distinct('vehicle.id').alias('vehicle_count'),
+    _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
+)
+_start(q7_df, write_q7, 'Q7')
 
-q6_influx = q6_df.writeStream \
-    .outputMode('update') \
-    .foreachBatch(write_q6) \
-    .trigger(processingTime=TRIGGER_INTERVAL) \
-    .option('checkpointLocation', f'{CHECKPOINT_BASE}/q6_influx') \
-    .queryName('Q6_influx') \
-    .start()
+# ── Q8 — Dwell time per lane (tumbling 2 min) ────────────────────────────────
+# Step 1: max seconds_in_roi per vehicle per lane.
+# Step 2: write_q8 aggregates to avg/max per (camera_id, lane) in foreachBatch.
+q8_df = vehicles \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '2 minutes'),
+    col('camera_id'),
+    col('vehicle.lane').alias('lane'),
+    col('vehicle.id').alias('vehicle_id'),
+).agg(
+    _round(_max('residence.seconds_in_roi'), 1).alias('dwell_seconds'),
+)
+_start(q8_df, write_q8, 'Q8')
 
-print("[Spark] Q6 started — lane-based traffic status (3 min / 1 min sliding)")
+# ── Q9 — Lane occupancy from snapshots (tumbling 1 min) ──────────────────────
+q9_df = snapshots \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '1 minute'),
+    col('camera_id'),
+).agg(
+    _round(avg('lane_counts.Right_Lane'), 2).alias('right_lane_avg'),
+    _round(avg('lane_counts.Middle_Lane'), 2).alias('middle_lane_avg'),
+    _round(avg('lane_counts.Left_Lane'), 2).alias('left_lane_avg'),
+    _round(_max(col('lane_counts.Right_Lane').cast('double')), 0).alias('right_lane_max'),
+    _round(_max(col('lane_counts.Middle_Lane').cast('double')), 0).alias('middle_lane_max'),
+    _round(_max(col('lane_counts.Left_Lane').cast('double')), 0).alias('left_lane_max'),
+)
+_start(q9_df, write_q9, 'Q9')
+
+# ── Q10 — Direction analysis per lane (tumbling 1 min) ───────────────────────
+q10_df = vehicles \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '1 minute'),
+    col('camera_id'),
+    col('vehicle.lane').alias('lane'),
+    col('kinematics.direction').alias('direction'),
+).agg(
+    approx_count_distinct('vehicle.id').alias('vehicle_count'),
+    _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
+)
+_start(q10_df, write_q10, 'Q10')
+
+# ── Q11 — Vehicle class breakdown from snapshots (tumbling 1 min) ─────────────
+# Tracks average count per vehicle class over time.
+# Source: snapshots (pre-aggregated counts, no frame inflation risk).
+q11_df = snapshots \
+    .withWatermark('event_time', WATERMARK_DELAY) \
+    .groupBy(
+    window('event_time', '1 minute'),
+    col('camera_id'),
+).agg(
+    _round(avg('counts.car'), 2).alias('avg_car'),
+    _round(avg('counts.motorcycle'), 2).alias('avg_motorcycle'),
+    _round(avg('counts.bus'), 2).alias('avg_bus'),
+    _round(avg('counts.truck'), 2).alias('avg_truck'),
+    _round(avg('counts.total'), 2).alias('avg_total'),
+)
+_start(q11_df, write_q11, 'Q11')
 
 print()
 print("=" * 60)
-print("  All 6 queries running. Press Ctrl+C to stop.")
+print("  All 11 queries running. Press Ctrl+C to stop.")
 print("=" * 60)
 print()
 
