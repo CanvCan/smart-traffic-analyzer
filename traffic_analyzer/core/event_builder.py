@@ -15,9 +15,9 @@ import time
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
-from traffic_analyzer.core.metrics import (
-    VehicleMetrics, TrafficMetrics, SNAPSHOT_EVERY
-)
+from traffic_analyzer.core.vehicle_metrics import VehicleMetrics
+from traffic_analyzer.core.scene_metrics import TrafficMetrics, SNAPSHOT_EVERY
+from traffic_analyzer.core.anomaly_detector import AnomalyDetector
 from traffic_analyzer.utils.config_loader import AppConfig
 from traffic_analyzer.visualization.colors import CLASS_LABELS
 
@@ -48,6 +48,7 @@ class EventBuilder:
         self._cfg = config
         self._vm = VehicleMetrics()
         self._roi_area = TrafficMetrics.roi_total_area(config.lanes)
+        self._anomaly_detector = AnomalyDetector(self._vm)
 
     @property
     def vm(self) -> VehicleMetrics:
@@ -114,17 +115,10 @@ class EventBuilder:
         speed = self._vm.get_speed(tid)
         direction = self._vm.get_direction(tid)
         stopped = self._vm.is_stopped(tid)
-        slowdown = self._vm.is_sudden_slowdown(tid)
         residence = self._vm.get_residence(tid, frame_id)
         lane = TrafficMetrics.get_lane(cx, cy, self._cfg.lanes)
 
-        # Only one anomaly at a time — stopped takes priority
-        if stopped:
-            anomaly_type = "stopped_vehicle"
-        elif slowdown:
-            anomaly_type = "sudden_slowdown"
-        else:
-            anomaly_type = None
+        anomaly = self._anomaly_detector.detect(tid)
 
         return {
             "event_type": "vehicle_detected",
@@ -151,9 +145,9 @@ class EventBuilder:
             "residence": residence,
 
             "anomaly": {
-                "is_anomaly": anomaly_type is not None,
-                "type": anomaly_type,
-                "stop_seconds": self._vm.get_stop_duration(tid) if stopped else 0.0,
+                "is_anomaly": anomaly.is_anomaly,
+                "type": anomaly.type,
+                "stop_seconds": anomaly.stop_seconds,
             },
         }
 
