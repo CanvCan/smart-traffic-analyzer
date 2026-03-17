@@ -10,6 +10,12 @@ class CameraConfig:
     display_width: int
     k_factor: float
 
+    def __post_init__(self):
+        if self.display_width <= 0:
+            raise ValueError(f"display_width must be > 0, got {self.display_width}")
+        if self.k_factor <= 0:
+            raise ValueError(f"k_factor must be > 0, got {self.k_factor}")
+
 
 @dataclass
 class ModelConfig:
@@ -20,6 +26,14 @@ class ModelConfig:
     iou: float
     agnostic_nms: bool
 
+    def __post_init__(self):
+        if not 0.0 < self.conf_threshold < 1.0:
+            raise ValueError(f"conf_threshold must be in (0, 1), got {self.conf_threshold}")
+        if self.imgsz <= 0:
+            raise ValueError(f"imgsz must be > 0, got {self.imgsz}")
+        if not 0.0 < self.iou < 1.0:
+            raise ValueError(f"iou must be in (0, 1), got {self.iou}")
+
 
 @dataclass
 class LaneConfig:
@@ -27,6 +41,12 @@ class LaneConfig:
     roi: List[int]
     points: List[List[int]] = field(default_factory=list)  # polygon points (optional)
     label_pt: List[int] = field(default_factory=list)  # manual label position [x, y]
+
+    def __post_init__(self):
+        if len(self.roi) != 4:
+            raise ValueError(f"roi must have exactly 4 elements [x1,y1,x2,y2], got {self.roi}")
+        if self.roi[0] >= self.roi[2] or self.roi[1] >= self.roi[3]:
+            raise ValueError(f"roi must satisfy x1<x2 and y1<y2, got {self.roi}")
 
 
 @dataclass
