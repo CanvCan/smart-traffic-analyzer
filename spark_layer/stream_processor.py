@@ -38,7 +38,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     from_json, col, window,
     count, avg, max as _max, min as _min, stddev as _stddev,
-    round as _round, to_timestamp, when, approx_count_distinct,
+    round as _round, when, approx_count_distinct,
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -57,6 +57,7 @@ spark = SparkSession.builder \
     .config('spark.jars.packages',
             'org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0') \
     .config('spark.sql.shuffle.partitions', '4') \
+    .config('spark.sql.session.timeZone', 'UTC') \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel('WARN')
@@ -83,13 +84,13 @@ raw_snapshots = read_topic(TOPIC_SNAPSHOTS)
 vehicles = raw_vehicles.select(
     from_json(col('raw'), VEHICLE_SCHEMA).alias('d')
 ).select('d.*') \
-    .withColumn('event_time', to_timestamp(col('timestamp').cast('long'))) \
+    .withColumn('event_time', col('timestamp').cast('timestamp')) \
     .filter(col('vehicle.lane').isNotNull())
 
 snapshots = raw_snapshots.select(
     from_json(col('raw'), SNAPSHOT_SCHEMA).alias('d')
 ).select('d.*') \
-    .withColumn('event_time', to_timestamp(col('timestamp').cast('long')))
+    .withColumn('event_time', col('timestamp').cast('timestamp'))
 
 print("[Spark] Schemas loaded and streams parsed.")
 

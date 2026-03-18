@@ -10,7 +10,6 @@ Two event types:
 JSON schema is stable — adding new fields is backward compatible.
 """
 
-import json
 import time
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -41,7 +40,7 @@ class EventBuilder:
     Usage (inside Analyzer._process_frame):
         events = self._event_builder.update(frame_id, frame_h, active_tracks)
         for e in events:
-            print(self._event_builder.to_json(e))   # or send to Kafka
+            self._producer.send(e)
     """
 
     def __init__(self, config: AppConfig):
@@ -248,8 +247,3 @@ class EventBuilder:
             "anomalies": anomalies,
         }
 
-    # ── SERIALISE ────────────────────────────────────────────────────────────
-
-    def to_json(self, event: Dict) -> str:
-        """Serialise event to UTF-8 JSON string ready for Kafka producer."""
-        return json.dumps(event, ensure_ascii=False, default=str)

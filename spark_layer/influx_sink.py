@@ -12,13 +12,14 @@ Design:
   - Errors are caught per-batch — one bad batch never stops the stream
   - InfluxDB client is a module-level singleton (one connection, reused)
   - camera_id is a tag on every measurement for multi-camera support
-  - Point timestamps use window.start so event time matches InfluxDB time
+  - Point timestamps are set by the InfluxDB server at write time
 
 Install dependency:
     pip install influxdb-client
 """
 
 import os
+import traceback
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -48,14 +49,8 @@ def _cam(row) -> str:
     return row["camera_id"] or "unknown"
 
 
-def _ts(row):
-    """Window start datetime — used as the InfluxDB point timestamp."""
-    return row["window"]["start"]
-
-
 # ── Shared write helper ───────────────────────────────────────────────────────
 def _batch_write(points: list, query_name: str) -> None:
-    """Write a list of Points to InfluxDB. Silently logs errors."""
     try:
         write_api = _get_client().write_api(write_options=SYNCHRONOUS)
         write_api.write(
@@ -66,6 +61,7 @@ def _batch_write(points: list, query_name: str) -> None:
         print(f"[InfluxDB] {query_name} → {len(points)} points written")
     except Exception as e:
         print(f"[InfluxDB] {query_name} write error: {e}")
+        traceback.print_exc()
 
 
 # ── Base writer ───────────────────────────────────────────────────────────────
@@ -99,7 +95,6 @@ class Q1Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("lane_vehicle_count")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .tag("vehicle_class", row["vehicle_class"] or "unknown")
@@ -123,7 +118,6 @@ class Q2Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("speed_tracking")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .tag("vehicle_class", row["vehicle_class"] or "unknown")
@@ -147,7 +141,6 @@ class Q3Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("heavy_vehicle_ratio")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .field("total_vehicles", int(row["total_vehicles"]))
@@ -171,7 +164,6 @@ class Q4Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("anomaly_density")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .tag("anomaly_type", row["anomaly_type"] or "unknown")
@@ -195,7 +187,6 @@ class Q5Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("traffic_status_transitions")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("traffic_status", row["traffic_status"] or "unknown")
             .field("snapshot_count", int(row["snapshot_count"]))
@@ -221,7 +212,6 @@ class Q6Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("lane_speed_metrics")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .field("avg_speed_px", float(row["avg_speed_px"] or 0))
@@ -244,7 +234,6 @@ class Q7Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("lane_flow_rate")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .field("vehicle_count", int(row["vehicle_count"]))
@@ -262,25 +251,24 @@ class Q8Writer(BaseInfluxWriter):
     Fields      : avg_dwell_sec, max_dwell_sec, vehicle_count
 
     batch_df has one row per (window, camera_id, vehicle_id, lane).
-    Second aggregation in Python produces per-(window_start, camera_id, lane) stats.
+    Second aggregation in Python produces per-(camera_id, lane) stats.
     """
 
     def build_points(self, rows) -> list:
-        # Group by (window_start, camera_id, lane) — a batch can span multiple windows
+        # Group by (camera_id, lane) — server time used as timestamp
         groups = defaultdict(list)
         for row in rows:
             if row["dwell_seconds"] is not None:
-                key = (_ts(row), _cam(row), row["lane"] or "unknown")
+                key = (_cam(row), row["lane"] or "unknown")
                 groups[key].append(float(row["dwell_seconds"]))
 
         if not groups:
             return []
 
         points = []
-        for (window_start, camera_id, lane), dwells in groups.items():
+        for (camera_id, lane), dwells in groups.items():
             p = (
                 Point("dwell_time")
-                .time(window_start)
                 .tag("camera_id", camera_id)
                 .tag("lane", lane)
                 .field("avg_dwell_sec", round(sum(dwells) / len(dwells), 1))
@@ -306,7 +294,6 @@ class Q9Writer(BaseInfluxWriter):
         points = []
         for row in rows:
             camera_id = _cam(row)
-            ts = _ts(row)
             for lane, avg_col, max_col in [
                 ("Right_Lane", "right_lane_avg", "right_lane_max"),
                 ("Middle_Lane", "middle_lane_avg", "middle_lane_max"),
@@ -318,7 +305,6 @@ class Q9Writer(BaseInfluxWriter):
                     continue
                 p = (
                     Point("lane_occupancy")
-                    .time(ts)
                     .tag("camera_id", camera_id)
                     .tag("lane", lane)
                     .field("avg_vehicle_count", float(avg_val or 0))
@@ -340,7 +326,6 @@ class Q10Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("direction_analysis")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .tag("lane", row["lane"] or "unknown")
             .tag("direction", row["direction"] or "unknown")
@@ -362,7 +347,6 @@ class Q11Writer(BaseInfluxWriter):
     def build_points(self, rows) -> list:
         return [
             Point("vehicle_class_breakdown")
-            .time(_ts(row))
             .tag("camera_id", _cam(row))
             .field("avg_car", float(row["avg_car"] or 0))
             .field("avg_motorcycle", float(row["avg_motorcycle"] or 0))
