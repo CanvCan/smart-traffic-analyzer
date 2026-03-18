@@ -1,3 +1,4 @@
+import traceback
 import cv2
 import supervision as sv
 from traffic_analyzer.core.detector import BaseDetector
@@ -46,7 +47,6 @@ class Analyzer:
                         self._process_frame(frame)
                     except Exception as e:
                         print(f"[ERROR] Frame {self._frame_count}: {e}")
-                        import traceback
                         traceback.print_exc()
 
                     h, w = frame.shape[:2]

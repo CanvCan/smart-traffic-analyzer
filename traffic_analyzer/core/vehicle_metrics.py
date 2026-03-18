@@ -15,8 +15,6 @@ import numpy as np
 from collections import defaultdict, deque
 from typing import Dict, Optional, Tuple
 
-from traffic_analyzer.utils.config_loader import LaneConfig
-
 # ── TUNABLE CONSTANTS ────────────────────────────────────────────────────────
 
 EMA_ALPHA = 0.25  # EMA smoothing factor for speed (0=heavy smooth, 1=raw)
