@@ -11,6 +11,21 @@ to console output without crashing the analyzer.
 
 import json
 
+
+class _StrictEncoder(json.JSONEncoder):
+    """Raises immediately on any non-serializable type.
+
+    Using default=str silently converts numpy/pandas types to strings,
+    which Spark then parses as null — causing silent data corruption.
+    A hard failure here surfaces the bug at the source.
+    """
+    def default(self, obj):
+        raise TypeError(
+            f"Non-serializable type in event: {type(obj).__name__} = {obj!r}. "
+            "Cast to a Python native type (int/float/bool/str) before adding to event dict."
+        )
+
+
 # ── Constants ────────────────────────────────────────────────────────────────
 BOOTSTRAP_SERVERS = 'localhost:9092'
 TOPIC_VEHICLES = 'traffic.vehicles'
@@ -86,7 +101,7 @@ class TrafficProducer:
 
     @staticmethod
     def _serialize(event: dict) -> str:
-        return json.dumps(event, ensure_ascii=False, default=str)
+        return json.dumps(event, ensure_ascii=False, cls=_StrictEncoder)
 
     @staticmethod
     def _connect():
