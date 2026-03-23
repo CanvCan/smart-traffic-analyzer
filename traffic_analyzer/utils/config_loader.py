@@ -2,6 +2,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Any
 
+VALID_DIRECTIONS = {"bottom_to_top", "top_to_bottom", "left_to_right", "right_to_left"}
+
 
 @dataclass
 class CameraConfig:
@@ -41,12 +43,15 @@ class LaneConfig:
     roi: List[int]
     points: List[List[int]] = field(default_factory=list)  # polygon points (optional)
     label_pt: List[int] = field(default_factory=list)  # manual label position [x, y]
+    expected_direction: str = ""  # e.g. "bottom_to_top" — used for wrong-way detection
 
     def __post_init__(self):
         if len(self.roi) != 4:
             raise ValueError(f"roi must have exactly 4 elements [x1,y1,x2,y2], got {self.roi}")
         if self.roi[0] >= self.roi[2] or self.roi[1] >= self.roi[3]:
             raise ValueError(f"roi must satisfy x1<x2 and y1<y2, got {self.roi}")
+        if self.expected_direction and self.expected_direction not in VALID_DIRECTIONS:
+            raise ValueError(f"expected_direction must be one of {VALID_DIRECTIONS}, got {self.expected_direction!r}")
 
 
 @dataclass
@@ -63,7 +68,7 @@ def load_config(path: str = 'config.json') -> AppConfig:
     camera = CameraConfig(**raw["camera_settings"])
     model = ModelConfig(**raw["model_settings"])
     lanes = [
-        LaneConfig(name=name, roi=data["roi"], points=data.get("points", []), label_pt=data.get("label_pt", []))
+        LaneConfig(name=name, roi=data["roi"], points=data.get("points", []), label_pt=data.get("label_pt", []), expected_direction=data.get("expected_direction", ""))
         for name, data in raw.get("lanes", {}).items()
     ]
 

@@ -116,20 +116,51 @@ def _ask_name():
             return name
 
 
+_DIRECTION_OPTIONS = [
+    ("1", "bottom_to_top", "↑  up    (vehicles move from bottom to top of frame)"),
+    ("2", "top_to_bottom", "↓  down  (vehicles move from top to bottom of frame)"),
+    ("3", "left_to_right", "→  right (vehicles move left to right)"),
+    ("4", "right_to_left", "←  left  (vehicles move right to left)"),
+]
+
+
+def _ask_direction():
+    print("  Expected vehicle direction (used for wrong-way detection):")
+    for num, value, label in _DIRECTION_OPTIONS:
+        print(f"    {num}) {label}   [{value}]")
+    print("    Enter → skip (wrong-way detection disabled for this lane)")
+    while True:
+        answer = input("  Choice (1-4 or Enter): ").strip()
+        if answer == "":
+            return ""
+        for num, value, _ in _DIRECTION_OPTIONS:
+            if answer == num or answer == value:
+                print(f"  Direction saved: {value}")
+                return value
+        print("  Invalid input. Enter a number between 1-4 or press Enter to skip.")
+
+
 # ── Save config ───────────────────────────────────────────────────────────────
 def _save_config(polygons, config_path):
     with open(config_path, 'r') as f:
         cfg = json.load(f)
+    existing_lanes = cfg.get("lanes", {})
     lanes = {}
     for poly in polygons:
         xs = [p[0] for p in poly["pts"]]
         ys = [p[1] for p in poly["pts"]]
         roi = [min(xs), min(ys), max(xs), max(ys)]
-        lanes[poly["name"]] = {
+        # Preserve any existing fields (e.g. expected_direction) not managed by the selector
+        existing = existing_lanes.get(poly["name"], {})
+        entry = {
+            **existing,
             "roi": roi,
             "points": [list(p) for p in poly["pts"]],
             "label_pt": list(poly.get("label_pt", [roi[0], roi[3]])),
         }
+        if poly.get("expected_direction"):
+            entry["expected_direction"] = poly["expected_direction"]
+        lanes[poly["name"]] = entry
     cfg["lanes"] = lanes
     with open(config_path, 'w') as f:
         json.dump(cfg, f, indent=4)
@@ -244,7 +275,8 @@ def run(config_path=None):
             else:
                 cv2.setMouseCallback("ROI Selector", lambda *a: None)
                 name = _ask_name()
-                polygons.append({"name": name, "pts": list(current_pts)})
+                direction = _ask_direction()
+                polygons.append({"name": name, "pts": list(current_pts), "expected_direction": direction})
                 current_pts = []
                 placing_label = True
                 label_preview = None
