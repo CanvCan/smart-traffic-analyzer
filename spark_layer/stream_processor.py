@@ -96,23 +96,13 @@ print("[Spark] Schemas loaded and streams parsed.")
 
 
 def _start(df, write_fn, name, mode='update'):
-    """Start console + InfluxDB sinks for a query dataframe."""
-    df.writeStream \
-        .outputMode(mode) \
-        .format('console') \
-        .option('truncate', False) \
-        .option('numRows', 20) \
-        .trigger(processingTime=TRIGGER_INTERVAL) \
-        .option('checkpointLocation', f'{CHECKPOINT_BASE}/{name}_console') \
-        .queryName(f'{name}_console') \
-        .start()
-
+    """Start InfluxDB sink for a query dataframe."""
     df.writeStream \
         .outputMode(mode) \
         .foreachBatch(write_fn) \
         .trigger(processingTime=TRIGGER_INTERVAL) \
-        .option('checkpointLocation', f'{CHECKPOINT_BASE}/{name}_influx') \
-        .queryName(f'{name}_influx') \
+        .option('checkpointLocation', f'{CHECKPOINT_BASE}/{name}') \
+        .queryName(name) \
         .start()
 
     print(f"[Spark] {name} started.")
@@ -135,6 +125,8 @@ q1_df = vehicles \
 _start(q1_df, write_q1, 'Q1')
 
 # ── Q2 — Speed tracking per lane + class (sliding 2 min / 30 sec) ────────────
+# One row per vehicle per window. write_q2 aggregates to lane+class level so
+# stopped_pct / slow_pct count vehicles, not frames (avoids frame inflation).
 q2_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
@@ -142,19 +134,17 @@ q2_df = vehicles \
     col('camera_id'),
     col('vehicle.lane').alias('lane'),
     col('vehicle.class').alias('vehicle_class'),
+    col('vehicle.id').alias('vehicle_id'),
 ).agg(
     _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
-    _round(_stddev('kinematics.speed_px_per_sec'), 2).alias('speed_stddev_px'),
-    _round(
-        avg(when(col('kinematics.is_stopped') == True, 1).otherwise(0)) * 100, 1
-    ).alias('stopped_pct'),
-    _round(
-        avg(when(col('kinematics.is_slow') == True, 1).otherwise(0)) * 100, 1
-    ).alias('slow_pct'),
+    _max(when(col('kinematics.is_stopped') == True, 1).otherwise(0)).alias('was_stopped'),
+    _max(when(col('kinematics.is_slow') == True, 1).otherwise(0)).alias('was_slow'),
 )
 _start(q2_df, write_q2, 'Q2')
 
 # ── Q3 — Heavy vehicle ratio (tumbling 5 min) ────────────────────────────────
+# heavy_ratio_pct is derived from heavy_count / total_vehicles via withColumn
+# to avoid a third independent HLL sketch that would diverge from heavy_count.
 q3_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
@@ -172,11 +162,9 @@ q3_df = vehicles \
     approx_count_distinct(
         when(col('vehicle.class') == 'Truck', col('vehicle.id'))
     ).alias('truck_count'),
-    _round(
-        approx_count_distinct(
-            when(col('vehicle.is_heavy') == True, col('vehicle.id'))
-        ) / approx_count_distinct('vehicle.id') * 100, 2
-    ).alias('heavy_ratio_pct'),
+).withColumn(
+    'heavy_ratio_pct',
+    _round(col('heavy_count').cast('double') / col('total_vehicles') * 100, 2),
 )
 _start(q3_df, write_q3, 'Q3')
 
@@ -217,19 +205,18 @@ q5_df = snapshots \
 _start(q5_df, write_q5, 'Q5')
 
 # ── Q6 — Lane speed metrics (sliding 3 min / 1 min) ──────────────────────────
+# One row per vehicle per window. write_q6 aggregates to lane level so
+# stopped_pct counts vehicles, not frames (avoids frame inflation).
 q6_df = vehicles \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
     window('event_time', '3 minutes', '1 minute'),
     col('camera_id'),
     col('vehicle.lane').alias('lane'),
+    col('vehicle.id').alias('vehicle_id'),
 ).agg(
     _round(avg('kinematics.speed_px_per_sec'), 2).alias('avg_speed_px'),
-    _round(_stddev('kinematics.speed_px_per_sec'), 2).alias('speed_stddev_px'),
-    approx_count_distinct('vehicle.id').alias('unique_vehicles'),
-    _round(
-        avg(when(col('kinematics.is_stopped') == True, 1).otherwise(0)) * 100, 1
-    ).alias('stopped_pct'),
+    _max(when(col('kinematics.is_stopped') == True, 1).otherwise(0)).alias('was_stopped'),
 )
 _start(q6_df, write_q6, 'Q6')
 
@@ -261,7 +248,9 @@ q8_df = vehicles \
 )
 _start(q8_df, write_q8, 'Q8')
 
-# ── Q9 — Lane occupancy from snapshots (tumbling 1 min) ──────────────────────
+# ── Q9 — Lane vehicle counts from snapshots (tumbling 1 min) ─────────────────
+# Note: "occupancy" here means vehicle count per lane, not area-based occupancy.
+# Area-based occupancy ratio is available in Q5 (avg_occupancy field).
 q9_df = snapshots \
     .withWatermark('event_time', WATERMARK_DELAY) \
     .groupBy(
