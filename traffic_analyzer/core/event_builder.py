@@ -15,12 +15,17 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 
 from traffic_analyzer.core.vehicle_metrics import VehicleMetrics
-from traffic_analyzer.core.scene_metrics import TrafficMetrics, SNAPSHOT_EVERY
+from traffic_analyzer.core.scene_metrics import TrafficMetrics
 from traffic_analyzer.core.anomaly_detector import AnomalyDetector
 from traffic_analyzer.utils.config_loader import AppConfig
 from traffic_analyzer.visualization.colors import CLASS_LABELS
 
 HEAVY_CLASSES = {5, 7}  # Bus=5, Truck=7
+
+# Emit one snapshot per SNAPSHOT_INTERVAL_SEC wall-clock seconds.
+# Time-based triggering is camera-FPS independent — a 15 FPS feed and a
+# 60 FPS feed both produce roughly the same number of snapshots per minute.
+SNAPSHOT_INTERVAL_SEC = 1.6
 
 # Minimum frames a track must be observed before a vehicle_detected event is
 # emitted. This guards against:
@@ -48,6 +53,8 @@ class EventBuilder:
         self._vm = VehicleMetrics()
         self._roi_area = TrafficMetrics.roi_total_area(config.lanes)
         self._anomaly_detector = AnomalyDetector(self._vm)
+        self._lane_expected_dir = {lane.name: lane.expected_direction for lane in config.lanes}
+        self._last_snapshot_time: float = 0.0
 
     @property
     def vm(self) -> VehicleMetrics:
@@ -95,10 +102,12 @@ class EventBuilder:
             events.append(vehicle_event)
             valid_snapshot_tracks.append(track)
 
-        if frame_id % SNAPSHOT_EVERY == 0:
+        now = time.time()
+        if now - self._last_snapshot_time >= SNAPSHOT_INTERVAL_SEC:
             events.append(
                 self._build_snapshot(frame_id, valid_snapshot_tracks, frame_height)
             )
+            self._last_snapshot_time = now
 
         self._vm.cleanup(active_ids)
         return events
@@ -111,13 +120,15 @@ class EventBuilder:
         cx = (x1 + x2) / 2.0
         cy = (y1 + y2) / 2.0
 
+        stable_cls = self._vm.get_stable_class(tid, cls_id)
         speed = self._vm.get_speed(tid)
         direction = self._vm.get_direction(tid)
         stopped = self._vm.is_stopped(tid)
         residence = self._vm.get_residence(tid, frame_id)
         lane = TrafficMetrics.get_lane(cx, cy, self._cfg.lanes)
 
-        anomaly = self._anomaly_detector.detect(tid)
+        expected_dir = self._lane_expected_dir.get(lane or "", "")
+        anomaly = self._anomaly_detector.detect(tid, direction, expected_dir)
 
         return {
             "event_type": "vehicle_detected",
@@ -127,16 +138,16 @@ class EventBuilder:
 
             "vehicle": {
                 "id": tid,
-                "class": CLASS_LABELS.get(cls_id, "Vehicle"),
-                "class_id": cls_id,
-                "is_heavy": cls_id in HEAVY_CLASSES,
+                "class": CLASS_LABELS.get(stable_cls, "Vehicle"),
+                "class_id": stable_cls,
+                "is_heavy": stable_cls in HEAVY_CLASSES,
                 "bbox": list(box),
                 "lane": lane,
             },
 
             "kinematics": {
                 "speed_px_per_sec": speed,
-                "is_slow": 0 < speed < 35.0,
+                "is_slow": bool(0 < speed < 35.0),
                 "is_stopped": stopped,
                 "direction": direction,
             },
@@ -178,12 +189,13 @@ class EventBuilder:
         for track in active_tracks:
             tid = track["tid"]
             cls_id = track["cls_id"]
+            stable_cls = self._vm.get_stable_class(tid, cls_id)
             box = track["box"]
             x1, y1, x2, y2 = box
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
 
-            class_counts[cls_id] = class_counts.get(cls_id, 0) + 1
+            class_counts[stable_cls] = class_counts.get(stable_cls, 0) + 1
             boxes.append(box)
 
             spd = self._vm.get_speed(tid)
@@ -193,23 +205,23 @@ class EventBuilder:
             if lane and lane in lane_counts:
                 lane_counts[lane] += 1
 
-            # Anomaly collection (deduplicated by priority)
-            if self._vm.is_stopped(tid):
-                anomalies.append({
+            direction = self._vm.get_direction(tid)
+            expected_dir = self._lane_expected_dir.get(lane or "", "")
+
+            # Anomaly collection — delegate to AnomalyDetector (single source of truth)
+            anomaly_result = self._anomaly_detector.detect(tid, direction, expected_dir)
+            if anomaly_result.is_anomaly:
+                entry = {
                     "vehicle_id": tid,
-                    "class": CLASS_LABELS.get(cls_id, "Vehicle"),
-                    "type": "stopped_vehicle",
-                    "stop_seconds": self._vm.get_stop_duration(tid),
+                    "class": CLASS_LABELS.get(stable_cls, "Vehicle"),
+                    "type": anomaly_result.type,
                     "lane": lane,
-                })
-            elif self._vm.is_sudden_slowdown(tid):
-                anomalies.append({
-                    "vehicle_id": tid,
-                    "class": CLASS_LABELS.get(cls_id, "Vehicle"),
-                    "type": "sudden_slowdown",
-                    "speed_px": spd,
-                    "lane": lane,
-                })
+                }
+                if anomaly_result.type == "stopped_vehicle":
+                    entry["stop_seconds"] = anomaly_result.stop_seconds
+                else:
+                    entry["speed_px"] = spd
+                anomalies.append(entry)
 
         total = len(active_tracks)
         heavy = class_counts[5] + class_counts[7]
