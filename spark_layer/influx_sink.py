@@ -18,6 +18,7 @@ Install dependency:
     pip install influxdb-client
 """
 
+import math
 import os
 import traceback
 from abc import ABC, abstractmethod
@@ -47,6 +48,15 @@ def _get_client() -> InfluxDBClient:
 
 def _cam(row) -> str:
     return row["camera_id"] or "unknown"
+
+
+def _stdev(values: list) -> float:
+    """Sample standard deviation. Returns 0.0 for fewer than 2 values."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return math.sqrt(sum((x - mean) ** 2 for x in values) / (n - 1))
 
 
 # ── Shared write helper ───────────────────────────────────────────────────────
@@ -113,20 +123,37 @@ class Q2Writer(BaseInfluxWriter):
     Measurement : speed_tracking
     Tags        : camera_id, lane, vehicle_class
     Fields      : avg_speed_px, speed_stddev_px, stopped_pct, slow_pct
+
+    batch_df has one row per (window, camera_id, lane, vehicle_class, vehicle_id).
+    Second aggregation in Python produces per-(camera_id, lane, vehicle_class) stats.
+    stopped_pct / slow_pct are vehicle-based percentages (not frame-based).
+    speed_stddev_px is the between-vehicle speed variation (stddev of per-vehicle avgs).
     """
 
     def build_points(self, rows) -> list:
-        return [
-            Point("speed_tracking")
-            .tag("camera_id", _cam(row))
-            .tag("lane", row["lane"] or "unknown")
-            .tag("vehicle_class", row["vehicle_class"] or "unknown")
-            .field("avg_speed_px", float(row["avg_speed_px"] or 0))
-            .field("speed_stddev_px", float(row["speed_stddev_px"] or 0))
-            .field("stopped_pct", float(row["stopped_pct"] or 0))
-            .field("slow_pct", float(row["slow_pct"] or 0))
-            for row in rows
-        ]
+        groups = defaultdict(list)
+        for row in rows:
+            key = (_cam(row), row["lane"] or "unknown", row["vehicle_class"] or "unknown")
+            groups[key].append(row)
+
+        points = []
+        for (camera_id, lane, vehicle_class), vehicle_rows in groups.items():
+            speeds = [float(r["avg_speed_px"]) for r in vehicle_rows if r["avg_speed_px"] is not None]
+            if not speeds:
+                continue
+            n = len(speeds)
+            p = (
+                Point("speed_tracking")
+                .tag("camera_id", camera_id)
+                .tag("lane", lane)
+                .tag("vehicle_class", vehicle_class)
+                .field("avg_speed_px", round(sum(speeds) / n, 2))
+                .field("speed_stddev_px", round(_stdev(speeds), 2))
+                .field("stopped_pct", round(sum(int(r["was_stopped"] or 0) for r in vehicle_rows) / n * 100, 1))
+                .field("slow_pct", round(sum(int(r["was_slow"] or 0) for r in vehicle_rows) / n * 100, 1))
+            )
+            points.append(p)
+        return points
 
 
 # ── Q3 — Heavy vehicle ratio ──────────────────────────────────────────────────
@@ -207,19 +234,36 @@ class Q6Writer(BaseInfluxWriter):
     Measurement : lane_speed_metrics
     Tags        : camera_id, lane
     Fields      : avg_speed_px, speed_stddev_px, unique_vehicles, stopped_pct
+
+    batch_df has one row per (window, camera_id, lane, vehicle_id).
+    Second aggregation in Python produces per-(camera_id, lane) stats.
+    stopped_pct is vehicle-based (not frame-based).
+    speed_stddev_px is the between-vehicle speed variation (stddev of per-vehicle avgs).
     """
 
     def build_points(self, rows) -> list:
-        return [
-            Point("lane_speed_metrics")
-            .tag("camera_id", _cam(row))
-            .tag("lane", row["lane"] or "unknown")
-            .field("avg_speed_px", float(row["avg_speed_px"] or 0))
-            .field("speed_stddev_px", float(row["speed_stddev_px"] or 0))
-            .field("unique_vehicles", int(row["unique_vehicles"]))
-            .field("stopped_pct", float(row["stopped_pct"] or 0))
-            for row in rows
-        ]
+        groups = defaultdict(list)
+        for row in rows:
+            key = (_cam(row), row["lane"] or "unknown")
+            groups[key].append(row)
+
+        points = []
+        for (camera_id, lane), vehicle_rows in groups.items():
+            speeds = [float(r["avg_speed_px"]) for r in vehicle_rows if r["avg_speed_px"] is not None]
+            if not speeds:
+                continue
+            n = len(speeds)
+            p = (
+                Point("lane_speed_metrics")
+                .tag("camera_id", camera_id)
+                .tag("lane", lane)
+                .field("avg_speed_px", round(sum(speeds) / n, 2))
+                .field("speed_stddev_px", round(_stdev(speeds), 2))
+                .field("unique_vehicles", n)
+                .field("stopped_pct", round(sum(int(r["was_stopped"] or 0) for r in vehicle_rows) / n * 100, 1))
+            )
+            points.append(p)
+        return points
 
 
 # ── Q7 — Flow rate per lane ───────────────────────────────────────────────────
