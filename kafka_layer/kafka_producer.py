@@ -1,65 +1,50 @@
 """
-kafka/producer/kafka_producer.py
+kafka_layer/kafka_producer.py
 
-Thin Kafka producer wrapper used by Analyzer.
-Analyzer knows nothing about Kafka internals —
-it only calls producer.send(event).
+Thin Kafka producer wrapper that implements IEventPublisher.
 
-Graceful fallback: if Kafka is unavailable, falls back
-to console output without crashing the analyzer.
+The Analyzer knows nothing about Kafka internals — it only calls
+publisher.send(event) through the IEventPublisher interface.
+
+Graceful fallback: if Kafka is unavailable the producer falls back to
+console output without crashing the analyzer.
 """
 
 import json
 
-
-class _StrictEncoder(json.JSONEncoder):
-    """Raises immediately on any non-serializable type.
-
-    Using default=str silently converts numpy/pandas types to strings,
-    which Spark then parses as null — causing silent data corruption.
-    A hard failure here surfaces the bug at the source.
-    """
-    def default(self, obj):
-        raise TypeError(
-            f"Non-serializable type in event: {type(obj).__name__} = {obj!r}. "
-            "Cast to a Python native type (int/float/bool/str) before adding to event dict."
-        )
-
+from traffic_analyzer.domain.ports import IEventPublisher
 
 # ── Constants ────────────────────────────────────────────────────────────────
 BOOTSTRAP_SERVERS = 'localhost:9092'
-TOPIC_VEHICLES = 'traffic.vehicles'
-TOPIC_SNAPSHOTS = 'traffic.snapshots'
+TOPIC_VEHICLES    = 'traffic.vehicles'
+TOPIC_SNAPSHOTS   = 'traffic.snapshots'
 
 
-class TrafficProducer:
+class TrafficProducer(IEventPublisher):
     """
     Wraps KafkaProducer and routes traffic events to the correct topic.
+    Implements IEventPublisher so it can be injected into Analyzer.
 
-    Usage (inside Analyzer.__init__):
-        from kafka.producer.kafka_producer import TrafficProducer
-        self._producer = TrafficProducer()
-
-    Usage (inside Analyzer._process_frame):
-        for event in events:
-            self._producer.send(event)
+    Usage (in main.py Composition Root):
+        publisher = TrafficProducer()
+        analyzer  = Analyzer(video_loop, frame_processor, publisher)
     """
 
     def __init__(self):
         self._producer = self._connect()
 
-    # ── PUBLIC ───────────────────────────────────────────────────────────────
+    # ── IEventPublisher ───────────────────────────────────────────────────────
 
     def send(self, event: dict) -> None:
         """
-        Route event to the correct Kafka topic.
-        Falls back to console if Kafka is unavailable.
+        Route the event to the correct Kafka topic.
+        Falls back to console output if Kafka is unavailable.
 
-          vehicle_detected  → traffic.vehicles   (keyed by vehicle ID)
-          traffic_snapshot  → traffic.snapshots  (no key)
+          vehicle_detected  -> traffic.vehicles   (keyed by vehicle ID)
+          traffic_snapshot  -> traffic.snapshots  (unkeyed)
         """
         event_type = event.get("event_type")
-        json_str = self._serialize(event)
+        json_str   = self._serialize(event)
 
         if self._producer is not None:
             self._send_kafka(event_type, event, json_str)
@@ -76,7 +61,7 @@ class TrafficProducer:
             except Exception as e:
                 print(f"[Kafka] Error during shutdown: {e}")
 
-    # ── PRIVATE ──────────────────────────────────────────────────────────────
+    # ── Private ───────────────────────────────────────────────────────────────
 
     def _send_kafka(self, event_type: str, event: dict, json_str: str) -> None:
         try:
@@ -93,21 +78,20 @@ class TrafficProducer:
 
     @staticmethod
     def _send_console(event_type: str, json_str: str) -> None:
-        """
-        Only snapshots are printed — vehicle events would spam the console.
-        """
+        """Only snapshots are printed — vehicle events would spam the console."""
         if event_type == "traffic_snapshot":
             print(f"[SNAPSHOT] {json_str}")
 
     @staticmethod
     def _serialize(event: dict) -> str:
-        return json.dumps(event, ensure_ascii=False, cls=_StrictEncoder)
+        # AnomalyType inherits from str, so default=str is a safety net only.
+        return json.dumps(event, ensure_ascii=False, default=str)
 
     @staticmethod
     def _connect():
         """
-        Try to connect to Kafka. Returns None on failure — caller gets
-        console fallback automatically, no crash.
+        Try to connect to Kafka.  Returns None on failure so the caller
+        receives console-only fallback automatically without crashing.
         """
         try:
             from kafka import KafkaProducer
@@ -123,7 +107,7 @@ class TrafficProducer:
                     buffer_memory=67108864,
                     max_block_ms=2000,
                 )
-                print(f"[Kafka] Connected → {BOOTSTRAP_SERVERS}")
+                print(f"[Kafka] Connected -> {BOOTSTRAP_SERVERS}")
                 return producer
             except NoBrokersAvailable:
                 print(f"[Kafka] No broker at {BOOTSTRAP_SERVERS} "
@@ -133,5 +117,5 @@ class TrafficProducer:
                 print(f"[Kafka] Could not connect ({e}) — console-only mode.")
                 return None
         except ImportError:
-            print("[Kafka] kafka-python not installed")
+            print("[Kafka] kafka-python not installed — console-only mode.")
             return None
