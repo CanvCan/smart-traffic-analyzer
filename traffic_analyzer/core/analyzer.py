@@ -7,6 +7,7 @@ from traffic_analyzer.utils.config_loader import AppConfig
 from traffic_analyzer.visualization.renderer import Renderer, GHOST_FRAMES
 from traffic_analyzer.core.event_builder import EventBuilder
 from traffic_analyzer.core.ghost_track_manager import GhostTrackManager
+from traffic_analyzer.core.scene_metrics import TrafficMetrics
 from kafka_layer.kafka_producer import TrafficProducer
 
 
@@ -83,10 +84,16 @@ class Analyzer:
             cls_id = int(detections.class_id[i])
             x1, y1, x2, y2 = map(int, detections.xyxy[i])
             box = (x1, y1, x2, y2)
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+
+            # Skip vehicles outside all lane ROIs — no metrics state, no event, no ghost
+            if TrafficMetrics.get_lane(cx, cy, self._cfg.lanes) is None:
+                continue
 
             active_ids.add(tid)
             # Single source of truth: VehicleMetrics inside EventBuilder
-            self._event_builder.vm.update(tid, box, self._frame_count, frame_h)
+            self._event_builder.vm.update(tid, box, self._frame_count, frame_h, cls_id)
             self._ghost_manager.update(tid, box, cls_id, self._frame_count)
             active_tracks.append({"tid": tid, "cls_id": cls_id, "box": box})
 
