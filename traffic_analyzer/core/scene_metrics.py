@@ -8,6 +8,7 @@ Design decisions:
 - Status   : Weighted tri-factor (speed + occupancy + count)
 """
 
+import cv2
 import numpy as np
 from typing import List, Optional, Tuple
 
@@ -51,9 +52,8 @@ class TrafficMetrics:
         """
         for lane in lanes:
             if lane.points and len(lane.points) >= 3:
-                import cv2 as _cv2
                 pts = np.array(lane.points, dtype=np.float32)
-                result = _cv2.pointPolygonTest(pts, (float(cx), float(cy)), False)
+                result = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False)
                 if result >= 0:
                     return lane.name
             else:

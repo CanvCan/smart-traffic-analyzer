@@ -1,18 +1,20 @@
 """
 core/vehicle_metrics.py
 
-Per-vehicle kinematic metrics: speed, direction, stopped detection, slowdown.
+Per-vehicle kinematic metrics: speed, direction, stopped detection, slowdown,
+and class majority voting.
 
 Design decisions:
 - Speed    : EMA-smoothed, perspective-compensated px/s
 - Direction: Linear regression over last N positions (noise-resistant)
 - Stopped  : Positional std-dev over a time window (camera-shake resistant)
 - Slowdown : Two-window EMA comparison with low-speed guard
+- Class    : Majority vote over last CLASS_VOTE_WINDOW frames (flicker suppression)
 """
 
 import time
 import numpy as np
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from typing import Dict, Optional, Tuple
 
 # ── TUNABLE CONSTANTS ────────────────────────────────────────────────────────
@@ -29,6 +31,7 @@ SLOWDOWN_PAST_WIN = 15  # Past window for slowdown comparison
 SLOWDOWN_NOW_WIN = 5  # Current window for slowdown comparison
 SLOWDOWN_RATIO = 0.50  # Speed must drop by this fraction to flag anomaly
 SLOWDOWN_MIN_SPEED = 30.0  # px/s — below this, slowdown is expected (stop-go)
+CLASS_VOTE_WINDOW = 20  # Frames considered for majority-vote class stabilisation
 
 
 class VehicleMetrics:
@@ -47,14 +50,19 @@ class VehicleMetrics:
         # Entry info
         self._entry_frame: Dict[int, int] = {}
         self._entry_time: Dict[int, float] = {}
+        # Wall-clock time when a vehicle first became stopped (cleared on movement)
+        self._stop_since: Dict[int, float] = {}
+        # Recent class_id observations for majority-vote stabilisation
+        self._class_votes: Dict[int, deque] = defaultdict(lambda: deque(maxlen=CLASS_VOTE_WINDOW))
 
     # ── UPDATE ───────────────────────────────────────────────────────────────
 
     def update(self, tid: int, box: Tuple[int, int, int, int],
-               frame_id: int, frame_height: int) -> None:
+               frame_id: int, frame_height: int, cls_id: int = -1) -> None:
         """
         Record new observation for track `tid`.
         Must be called exactly once per frame per active track.
+        cls_id is used for majority-vote class stabilisation.
         """
         x1, y1, x2, y2 = box
         cx = (x1 + x2) / 2.0
@@ -94,6 +102,18 @@ class VehicleMetrics:
 
         pos.append((cx, cy, now))
 
+        # Record class vote for majority-vote stabilisation
+        if cls_id >= 0:
+            self._class_votes[tid].append(cls_id)
+
+        # Track when the vehicle first became stopped so get_stop_duration()
+        # is not limited by the position deque size.
+        if self.is_stopped(tid):
+            if tid not in self._stop_since:
+                self._stop_since[tid] = now
+        else:
+            self._stop_since.pop(tid, None)
+
     # ── SPEED ────────────────────────────────────────────────────────────────
 
     def get_speed(self, tid: int) -> float:
@@ -101,7 +121,22 @@ class VehicleMetrics:
         Current EMA speed in px/s.
         Returns 0.0 if not enough history.
         """
-        return round(self._ema.get(tid, 0.0), 2)
+        return float(round(self._ema.get(tid, 0.0), 2))
+
+    # ── CLASS STABILISATION ──────────────────────────────────────────────────
+
+    def get_stable_class(self, tid: int, raw_cls_id: int) -> int:
+        """
+        Return the majority-voted class over the last CLASS_VOTE_WINDOW frames.
+        Falls back to raw_cls_id if there is no vote history yet.
+
+        Prevents flickering between classes (e.g. Car → Bus → Car) caused by
+        per-frame YOLO uncertainty.
+        """
+        votes = self._class_votes.get(tid)
+        if not votes:
+            return raw_cls_id
+        return Counter(votes).most_common(1)[0][0]
 
     # ── DIRECTION ────────────────────────────────────────────────────────────
 
@@ -159,19 +194,19 @@ class VehicleMetrics:
 
     def get_stop_duration(self, tid: int) -> float:
         """
-        Seconds since the vehicle was last moving.
-        Returns 0.0 if not stopped.
+        Seconds since the vehicle first became stopped.
+        Returns 0.0 if not currently stopped.
 
-        Uses the oldest available position capped to STOP_MIN_FRAMES
-        so this is safe regardless of deque length.
+        Uses _stop_since timestamp (set in update()) so the value is not
+        capped by the position deque size — a vehicle stopped for 10 minutes
+        correctly returns ~600 seconds.
         """
         if not self.is_stopped(tid):
             return 0.0
-        pos = list(self._pos[tid])
-        if len(pos) < 2:
+        stop_since = self._stop_since.get(tid)
+        if stop_since is None:
             return 0.0
-        lookback = min(STOP_MIN_FRAMES, len(pos))
-        return round(pos[-1][2] - pos[-lookback][2], 2)
+        return round(time.time() - stop_since, 2)
 
     # ── SUDDEN SLOWDOWN ──────────────────────────────────────────────────────
 
@@ -224,3 +259,5 @@ class VehicleMetrics:
                 self._ema.pop(tid, None)
                 self._entry_frame.pop(tid, None)
                 self._entry_time.pop(tid, None)
+                self._stop_since.pop(tid, None)
+                self._class_votes.pop(tid, None)
