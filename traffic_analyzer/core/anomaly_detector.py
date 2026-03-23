@@ -1,20 +1,24 @@
 """
 core/anomaly_detector.py
 
-Detects per-vehicle anomalies (stopped vehicle, wrong way, sudden slowdown).
-Delegates all kinematic checks to VehicleMetrics.
+Evaluates anomaly conditions for individual vehicle tracks.
 
-Priority: stopped_vehicle > wrong_way > sudden_slowdown
+Detects three anomaly types in priority order:
+  1. stopped_vehicle  — vehicle stationary beyond the configured threshold
+  2. wrong_way        — vehicle moving in the direction opposite to lane expectation
+  3. sudden_slowdown  — vehicle speed drops sharply within a short window
+
+Kinematic state is delegated entirely to VehicleMetrics; this class only
+applies the decision logic and returns a typed AnomalyResult value object.
 """
 
-from dataclasses import dataclass
-from typing import Optional
-
 from traffic_analyzer.core.vehicle_metrics import VehicleMetrics
+from traffic_analyzer.domain.models import AnomalyResult, AnomalyType
 
-# Maps each direction to its exact opposite.
-# Wrong-way is only flagged when the vehicle moves in the opposite direction —
-# lateral movement (e.g. left/right when expected is up) is not penalised.
+# Maps each direction string to its exact opposite.
+# Wrong-way is only flagged when the vehicle moves in the exact opposite
+# direction.  Lateral movement (e.g. left/right on an up/down lane) is
+# not penalised.
 OPPOSITE_DIRECTION = {
     "bottom_to_top": "top_to_bottom",
     "top_to_bottom": "bottom_to_top",
@@ -23,18 +27,10 @@ OPPOSITE_DIRECTION = {
 }
 
 
-@dataclass
-class AnomalyResult:
-    """Result of a single-vehicle anomaly check."""
-    is_anomaly: bool
-    type: Optional[str]   # "stopped_vehicle" | "wrong_way" | "sudden_slowdown" | None
-    stop_seconds: float
-
-
 class AnomalyDetector:
     """
-    Evaluates anomaly conditions for a given track.
-    Only one anomaly type is reported at a time — priority order above.
+    Evaluates anomaly conditions for a single track.
+    Only one anomaly type is reported per call — see priority order above.
     """
 
     def __init__(self, vm: VehicleMetrics):
@@ -45,13 +41,15 @@ class AnomalyDetector:
         """
         Return an AnomalyResult for track `tid`.
 
-        direction          : current movement direction from VehicleMetrics
-        expected_direction : lane's configured expected direction (may be empty)
+        Args:
+            tid:                Track identifier.
+            direction:          Current movement direction string from VehicleMetrics.
+            expected_direction: Lane's configured expected direction (may be empty).
         """
         if self._vm.is_stopped(tid):
             return AnomalyResult(
                 is_anomaly=True,
-                type="stopped_vehicle",
+                type=AnomalyType.STOPPED_VEHICLE,
                 stop_seconds=self._vm.get_stop_duration(tid),
             )
 
@@ -60,15 +58,15 @@ class AnomalyDetector:
                 and direction == OPPOSITE_DIRECTION.get(expected_direction)):
             return AnomalyResult(
                 is_anomaly=True,
-                type="wrong_way",
+                type=AnomalyType.WRONG_WAY,
                 stop_seconds=0.0,
             )
 
         if self._vm.is_sudden_slowdown(tid):
             return AnomalyResult(
                 is_anomaly=True,
-                type="sudden_slowdown",
+                type=AnomalyType.SUDDEN_SLOWDOWN,
                 stop_seconds=0.0,
             )
 
-        return AnomalyResult(is_anomaly=False, type=None, stop_seconds=0.0)
+        return AnomalyResult.none()

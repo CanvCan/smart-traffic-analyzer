@@ -1,18 +1,20 @@
 """
 spark_layer/influx_sink.py
 
-InfluxDB write functions for each PySpark query (Q1-Q11).
-Used via foreachBatch in stream_processor.py.
+InfluxDB sink writers for each PySpark streaming query (Q1–Q11).
+Plugged into Spark Structured Streaming via foreachBatch.
 
-Design:
-  - Each writer class extends BaseInfluxWriter and implements build_points()
-  - Writers are called as callables: write_q1(batch_df, batch_id)
-  - Rows are converted to influxdb_client Point objects
-  - Written to InfluxDB in a single batch_write call
-  - Errors are caught per-batch — one bad batch never stops the stream
-  - InfluxDB client is a module-level singleton (one connection, reused)
-  - camera_id is a tag on every measurement for multi-camera support
-  - Point timestamps are set by the InfluxDB server at write time
+Architecture:
+  - InfluxConfig carries all connection parameters; values are read from
+    environment variables at startup and can be overridden per-instance for testing.
+  - BaseInfluxWriter provides a shared __call__ / _write contract.
+  - Each QnWriter subclass implements build_points() to map Spark rows to
+    influxdb_client Point objects for its specific measurement schema.
+  - The InfluxDB client is lazily initialised per writer instance — no shared
+    global state, safe for concurrent Spark executors.
+  - Errors are isolated per batch: a single write failure never stops the stream.
+  - camera_id is a tag on every measurement, enabling multi-camera dashboards.
+  - Point timestamps are assigned by the InfluxDB server at write time.
 
 Install dependency:
     pip install influxdb-client
@@ -23,28 +25,42 @@ import os
 import traceback
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from dataclasses import dataclass
+
 from dotenv import load_dotenv
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-# ── InfluxDB connection config ────────────────────────────────────────────────
 load_dotenv()
 
-INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN")
-INFLUX_URL = "http://localhost:8086"
-INFLUX_ORG = "myorg"
-INFLUX_BUCKET = "traffic_metrics"
 
-# ── Singleton client — one connection shared across all batches ───────────────
-_client: InfluxDBClient = None
+# ── InfluxDB connection configuration ────────────────────────────────────────
+
+@dataclass
+class InfluxConfig:
+    """
+    Value object carrying all InfluxDB connection parameters.
+
+    Used instead of hardcoded constants; a different config can be
+    injected in tests or alternative environments.
+    """
+    url:    str
+    token:  str
+    org:    str
+    bucket: str
+
+    @classmethod
+    def from_env(cls) -> "InfluxConfig":
+        """Build configuration from environment variables."""
+        return cls(
+            url    = os.getenv("INFLUXDB_URL",    "http://localhost:8086"),
+            token  = os.getenv("INFLUXDB_TOKEN",  ""),
+            org    = os.getenv("INFLUXDB_ORG",    "myorg"),
+            bucket = os.getenv("INFLUXDB_BUCKET", "traffic_metrics"),
+        )
 
 
-def _get_client() -> InfluxDBClient:
-    global _client
-    if _client is None:
-        _client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
-    return _client
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _cam(row) -> str:
     return row["camera_id"] or "unknown"
@@ -59,25 +75,28 @@ def _stdev(values: list) -> float:
     return math.sqrt(sum((x - mean) ** 2 for x in values) / (n - 1))
 
 
-# ── Shared write helper ───────────────────────────────────────────────────────
-def _batch_write(points: list, query_name: str) -> None:
-    try:
-        write_api = _get_client().write_api(write_options=SYNCHRONOUS)
-        write_api.write(
-            bucket=INFLUX_BUCKET,
-            org=INFLUX_ORG,
-            record=points,
-        )
-        print(f"[InfluxDB] {query_name} → {len(points)} points written")
-    except Exception as e:
-        print(f"[InfluxDB] {query_name} write error: {e}")
-        traceback.print_exc()
-
-
 # ── Base writer ───────────────────────────────────────────────────────────────
 
 class BaseInfluxWriter(ABC):
-    """Base class for all InfluxDB batch writers."""
+    """
+    Base class for all InfluxDB batch writers.
+
+    Each writer receives its own InfluxConfig via the constructor.
+    No global state — multiple instances run safely in concurrent contexts.
+    """
+
+    def __init__(self, config: InfluxConfig):
+        self._config = config
+        self._client: InfluxDBClient = None  # lazy init
+
+    def _get_client(self) -> InfluxDBClient:
+        if self._client is None:
+            self._client = InfluxDBClient(
+                url=self._config.url,
+                token=self._config.token,
+                org=self._config.org,
+            )
+        return self._client
 
     @abstractmethod
     def build_points(self, rows) -> list:
@@ -90,7 +109,20 @@ class BaseInfluxWriter(ABC):
             return
         points = self.build_points(rows)
         if points:
-            _batch_write(points, self.__class__.__name__)
+            self._write(points)
+
+    def _write(self, points: list) -> None:
+        try:
+            write_api = self._get_client().write_api(write_options=SYNCHRONOUS)
+            write_api.write(
+                bucket=self._config.bucket,
+                org=self._config.org,
+                record=points,
+            )
+            print(f"[InfluxDB] {self.__class__.__name__} → {len(points)} points written")
+        except Exception as e:
+            print(f"[InfluxDB] {self.__class__.__name__} write error: {e}")
+            traceback.print_exc()
 
 
 # ── Q1 — Lane-based vehicle count ────────────────────────────────────────────
@@ -299,7 +331,6 @@ class Q8Writer(BaseInfluxWriter):
     """
 
     def build_points(self, rows) -> list:
-        # Group by (camera_id, lane) — server time used as timestamp
         groups = defaultdict(list)
         for row in rows:
             if row["dwell_seconds"] is not None:
@@ -339,9 +370,9 @@ class Q9Writer(BaseInfluxWriter):
         for row in rows:
             camera_id = _cam(row)
             for lane, avg_col, max_col in [
-                ("Right_Lane", "right_lane_avg", "right_lane_max"),
+                ("Right_Lane",  "right_lane_avg",  "right_lane_max"),
                 ("Middle_Lane", "middle_lane_avg", "middle_lane_max"),
-                ("Left_Lane", "left_lane_avg", "left_lane_max"),
+                ("Left_Lane",   "left_lane_avg",   "left_lane_max"),
             ]:
                 avg_val = row[avg_col]
                 max_val = row[max_col]
@@ -392,24 +423,29 @@ class Q11Writer(BaseInfluxWriter):
         return [
             Point("vehicle_class_breakdown")
             .tag("camera_id", _cam(row))
-            .field("avg_car", float(row["avg_car"] or 0))
+            .field("avg_car",        float(row["avg_car"] or 0))
             .field("avg_motorcycle", float(row["avg_motorcycle"] or 0))
-            .field("avg_bus", float(row["avg_bus"] or 0))
-            .field("avg_truck", float(row["avg_truck"] or 0))
-            .field("avg_total", float(row["avg_total"] or 0))
+            .field("avg_bus",        float(row["avg_bus"] or 0))
+            .field("avg_truck",      float(row["avg_truck"] or 0))
+            .field("avg_total",      float(row["avg_total"] or 0))
             for row in rows
         ]
 
 
-# ── Module-level instances for backward compatibility with stream_processor.py ─
-write_q1 = Q1Writer()
-write_q2 = Q2Writer()
-write_q3 = Q3Writer()
-write_q4 = Q4Writer()
-write_q5 = Q5Writer()
-write_q6 = Q6Writer()
-write_q7 = Q7Writer()
-write_q8 = Q8Writer()
-write_q9 = Q9Writer()
-write_q10 = Q10Writer()
-write_q11 = Q11Writer()
+# ── Module-level writer instances ────────────────────────────────────────────
+# Imported directly by stream_processor.py as foreachBatch sinks.
+# Override by constructing writer instances with a custom InfluxConfig.
+
+_default_config = InfluxConfig.from_env()
+
+write_q1  = Q1Writer(_default_config)
+write_q2  = Q2Writer(_default_config)
+write_q3  = Q3Writer(_default_config)
+write_q4  = Q4Writer(_default_config)
+write_q5  = Q5Writer(_default_config)
+write_q6  = Q6Writer(_default_config)
+write_q7  = Q7Writer(_default_config)
+write_q8  = Q8Writer(_default_config)
+write_q9  = Q9Writer(_default_config)
+write_q10 = Q10Writer(_default_config)
+write_q11 = Q11Writer(_default_config)
