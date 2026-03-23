@@ -15,6 +15,7 @@
     },
     "lanes": {
         "Right_Lane": {
+            "expected_direction": "bottom_to_top",
             "roi": [
                 1117,
                 296,
@@ -57,6 +58,7 @@
             ]
         },
         "Middle_Lane": {
+            "expected_direction": "bottom_to_top",
             "roi": [
                 27,
                 299,
@@ -103,6 +105,7 @@
             ]
         },
         "Left_Lane": {
+            "expected_direction": "bottom_to_top",
             "roi": [
                 4,
                 339,
