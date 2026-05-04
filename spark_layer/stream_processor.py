@@ -36,7 +36,7 @@ from influx_sink import (
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    from_json, col, window,
+    from_json, col, window, explode,
     count, avg, max as _max, min as _min, stddev as _stddev,
     round as _round, when, approx_count_distinct,
 )
@@ -249,20 +249,22 @@ q8_df = vehicles \
 _start(q8_df, write_q8, 'Q8')
 
 # ── Q9 — Lane vehicle counts from snapshots (tumbling 1 min) ─────────────────
-# Note: "occupancy" here means vehicle count per lane, not area-based occupancy.
-# Area-based occupancy ratio is available in Q5 (avg_occupancy field).
+# explode() converts the lane_counts map to one row per lane — no hardcoded
+# lane names, works with any camera ROI configuration.
 q9_df = snapshots \
     .withWatermark('event_time', WATERMARK_DELAY) \
+    .select(
+        col('camera_id'),
+        col('event_time'),
+        explode(col('lane_counts')).alias('lane', 'vehicle_count'),
+    ) \
     .groupBy(
     window('event_time', '1 minute'),
     col('camera_id'),
+    col('lane'),
 ).agg(
-    _round(avg('lane_counts.Right_Lane'), 2).alias('right_lane_avg'),
-    _round(avg('lane_counts.Middle_Lane'), 2).alias('middle_lane_avg'),
-    _round(avg('lane_counts.Left_Lane'), 2).alias('left_lane_avg'),
-    _round(_max(col('lane_counts.Right_Lane').cast('double')), 0).alias('right_lane_max'),
-    _round(_max(col('lane_counts.Middle_Lane').cast('double')), 0).alias('middle_lane_max'),
-    _round(_max(col('lane_counts.Left_Lane').cast('double')), 0).alias('left_lane_max'),
+    _round(avg(col('vehicle_count').cast('double')), 2).alias('avg_vehicle_count'),
+    _round(_max(col('vehicle_count').cast('double')), 0).alias('max_vehicle_count'),
 )
 _start(q9_df, write_q9, 'Q9')
 
@@ -293,6 +295,8 @@ q11_df = snapshots \
     _round(avg('counts.motorcycle'), 2).alias('avg_motorcycle'),
     _round(avg('counts.bus'), 2).alias('avg_bus'),
     _round(avg('counts.truck'), 2).alias('avg_truck'),
+    _round(avg('counts.dolmus'), 2).alias('avg_dolmus'),
+    _round(avg('counts.taxi'), 2).alias('avg_taxi'),
     _round(avg('counts.total'), 2).alias('avg_total'),
 )
 _start(q11_df, write_q11, 'Q11')

@@ -10,7 +10,7 @@ Rule: adding new fields is backward compatible.
 
 from pyspark.sql.types import (
     StructType, StructField,
-    StringType, IntegerType, DoubleType, BooleanType, ArrayType
+    StringType, IntegerType, DoubleType, BooleanType, ArrayType, MapType
 )
 
 # ── vehicle_detected schema ──────────────────────────────────────────────────
@@ -62,6 +62,8 @@ SNAPSHOT_SCHEMA = StructType([
         StructField('motorcycle', IntegerType()),
         StructField('bus', IntegerType()),
         StructField('truck', IntegerType()),
+        StructField('dolmus', IntegerType()),
+        StructField('taxi', IntegerType()),
         StructField('heavy_vehicle_ratio', DoubleType()),
     ])),
 
@@ -76,15 +78,9 @@ SNAPSHOT_SCHEMA = StructType([
         StructField('occupancy_ratio', DoubleType()),
     ])),
 
-    # IMPORTANT: lane_counts field names must match lane names defined in app config.
-    # Spark schemas are compile-time static — if you rename or add lanes in the
-    # config, update these StructFields to match, otherwise the snapshot stream
-    # will silently produce nulls for mismatched lane names.
-    StructField('lane_counts', StructType([
-        StructField('Right_Lane', IntegerType()),
-        StructField('Middle_Lane', IntegerType()),
-        StructField('Left_Lane', IntegerType()),
-    ])),
+    # MapType allows any set of lane names (Right_Lane, Left_Lane, custom names, etc.)
+    # so cameras with different ROI configurations never cause a schema mismatch.
+    StructField('lane_counts', MapType(StringType(), IntegerType())),
 
     StructField('anomalies', ArrayType(StructType([
         StructField('vehicle_id', IntegerType()),

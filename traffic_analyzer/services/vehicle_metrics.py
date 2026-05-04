@@ -1,5 +1,5 @@
 """
-core/vehicle_metrics.py
+services/vehicle_metrics.py
 
 Per-vehicle kinematic metrics: speed, direction, stopped detection, slowdown,
 and class majority voting.
@@ -9,7 +9,7 @@ Design decisions:
 - Direction: Linear regression over last N positions (noise-resistant)
 - Stopped  : Positional std-dev over a time window (camera-shake resistant)
 - Slowdown : Two-window EMA comparison with low-speed guard
-- Class    : Majority vote over last CLASS_VOTE_WINDOW frames (flicker suppression)
+- Class    : Majority vote over last CLASS_VOTE_WINDOW frames (RF-DETR flicker suppression)
 """
 
 import time

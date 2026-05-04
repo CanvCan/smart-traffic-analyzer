@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from typing import Tuple, List
 from traffic_analyzer.visualization.colors import CLASS_COLORS, CLASS_LABELS, LANE_PALETTE
-from traffic_analyzer.utils.config_loader import LaneConfig
+from traffic_analyzer.infrastructure.config_loader import LaneConfig
 
 # Ghost duration: how long the last known bbox is shown after a track disappears.
 # ByteTracker's lost_track_buffer (default 150 frames) controls re-ID window —

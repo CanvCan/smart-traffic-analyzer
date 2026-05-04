@@ -1,5 +1,5 @@
 """
-core/ghost_track_manager.py
+visualization/ghost_track_manager.py
 
 Manages ghost rendering state for recently-lost tracks.
 A "ghost" is a track that has disappeared from the detector but whose last
@@ -41,7 +41,7 @@ class GhostTrackManager:
                     ghosts.append({
                         "tid": tid,
                         "box": box,
-                        "cls_id": self._last_cls.get(tid, 2),
+                        "cls_id": self._last_cls.get(tid, 1),
                     })
         return ghosts
 
