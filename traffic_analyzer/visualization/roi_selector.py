@@ -1,8 +1,10 @@
 import cv2
 import json
 import os
+from pathlib import Path
+
 import numpy as np
-from traffic_analyzer.utils.config_loader import load_config
+from traffic_analyzer.infrastructure.config_loader import load_config, save_camera_lanes
 from traffic_analyzer.visualization.colors import LANE_PALETTE
 
 SNAP_RADIUS = 10
@@ -140,20 +142,50 @@ def _ask_direction():
         print("  Invalid input. Enter a number between 1-4 or press Enter to skip.")
 
 
+# ── Frame acquisition ─────────────────────────────────────────────────────────
+def _grab_frame(source: str) -> "np.ndarray | None":
+    """
+    Grab a single frame from a file path or an MJPEG stream URL.
+    Returns the frame as a BGR numpy array, or None on failure.
+    """
+    if source.startswith("http"):
+        # MJPEG stream: read until we get one valid JPEG frame
+        import requests, urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        try:
+            with requests.get(source, stream=True, verify=False, timeout=10) as r:
+                r.raise_for_status()
+                buf = b""
+                for chunk in r.iter_content(chunk_size=4096):
+                    buf += chunk
+                    start = buf.find(b"\xff\xd8")
+                    end   = buf.find(b"\xff\xd9")
+                    if start != -1 and end != -1 and end > start:
+                        jpg   = buf[start:end + 2]
+                        frame = cv2.imdecode(
+                            np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR
+                        )
+                        if frame is not None:
+                            return frame
+        except Exception as e:
+            print(f"[ROI Selector] Stream error: {e}")
+        return None
+    else:
+        cap = cv2.VideoCapture(source)
+        ret, frame = cap.read()
+        cap.release()
+        return frame if ret else None
+
+
 # ── Save config ───────────────────────────────────────────────────────────────
-def _save_config(polygons, config_path):
-    with open(config_path, 'r') as f:
-        cfg = json.load(f)
-    existing_lanes = cfg.get("lanes", {})
+def _build_lanes_dict(polygons: list) -> dict:
+    """Convert polygon list to the lane dict format used in JSON files."""
     lanes = {}
     for poly in polygons:
         xs = [p[0] for p in poly["pts"]]
         ys = [p[1] for p in poly["pts"]]
         roi = [min(xs), min(ys), max(xs), max(ys)]
-        # Preserve any existing fields (e.g. expected_direction) not managed by the selector
-        existing = existing_lanes.get(poly["name"], {})
         entry = {
-            **existing,
             "roi": roi,
             "points": [list(p) for p in poly["pts"]],
             "label_pt": list(poly.get("label_pt", [roi[0], roi[3]])),
@@ -161,16 +193,47 @@ def _save_config(polygons, config_path):
         if poly.get("expected_direction"):
             entry["expected_direction"] = poly["expected_direction"]
         lanes[poly["name"]] = entry
-    cfg["lanes"] = lanes
-    with open(config_path, 'w') as f:
-        json.dump(cfg, f, indent=4)
-    print(f"\n  config.json updated — {len(polygons)} lane(s) saved.")
+    return lanes
+
+
+def _save_config(polygons, config_path, camera_id: str | None = None,
+                 cameras_dir: Path | None = None):
+    """
+    Persist lane polygons.
+    - If camera_id is given → save to cameras/<camera_id>.json
+    - Otherwise            → save to config.json (legacy / local file mode)
+    """
+    lanes = _build_lanes_dict(polygons)
+
+    if camera_id and cameras_dir:
+        save_camera_lanes(camera_id, cameras_dir, lanes)
+    else:
+        # Legacy path: update config.json in-place
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+        cfg["lanes"] = lanes
+        with open(config_path, 'w') as f:
+            json.dump(cfg, f, indent=4)
+        print(f"\n  config.json updated — {len(polygons)} lane(s) saved.")
+
     for name, data in lanes.items():
         print(f"    {name}: label_pt={data['label_pt']}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def run(config_path=None):
+def run(config_path=None, camera_id: str | None = None,
+        stream_url: str | None = None, cameras_dir: Path | None = None):
+    """
+    Launch the interactive ROI selector.
+
+    Args:
+        config_path:  Path to global config.json (used for local file mode).
+        camera_id:    IZUM camera ID (e.g. 'CAM-TR-IZM-K87'). If given, lanes
+                      are saved to cameras/<camera_id>.json instead of config.json.
+        stream_url:   Live MJPEG stream URL. If given, the first frame is grabbed
+                      from the stream instead of from the local video file.
+        cameras_dir:  Directory where per-camera JSON files are stored.
+    """
     global polygons, current_pts, drag_idx, placing_label, label_preview
 
     global SCALING_FACTOR
@@ -184,17 +247,28 @@ def run(config_path=None):
         this_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.normpath(os.path.join(this_dir, '..', 'config.json'))
 
-    cfg = load_config(config_path)
-    video_path = cfg.camera.video_path
-    if not os.path.isabs(video_path):
-        config_dir = os.path.dirname(os.path.abspath(config_path))
-        video_path = os.path.normpath(os.path.join(config_dir, video_path))
+    if cameras_dir is None:
+        cameras_dir = Path(os.path.dirname(os.path.abspath(config_path))) / 'cameras'
 
-    cap = cv2.VideoCapture(video_path)
-    ret, frame = cap.read()
-    cap.release()
-    if not ret:
-        print(f"[ERROR] Cannot open video: {video_path}")
+    # ── Determine frame source ─────────────────────────────────────────────
+    if stream_url:
+        source = stream_url
+        source_label = f"[LIVE] {camera_id or stream_url}"
+        print(f"[ROI Selector] Grabbing frame from stream: {stream_url}")
+    else:
+        cfg = load_config(config_path)
+        video_path = cfg.camera.video_path
+        if not os.path.isabs(video_path):
+            config_dir = os.path.dirname(os.path.abspath(config_path))
+            video_path = os.path.normpath(os.path.join(config_dir, video_path))
+        source = video_path
+        source_label = video_path
+        if camera_id is None:
+            camera_id = "local"
+
+    frame = _grab_frame(source)
+    if frame is None:
+        print(f"[ERROR] Cannot grab frame from: {source}")
         return
 
     # Auto-fit: detect screen resolution and scale video to fit
@@ -222,7 +296,7 @@ def run(config_path=None):
     cv2.namedWindow("ROI Selector")
     cv2.setMouseCallback("ROI Selector", mouse_polygon)
 
-    print(f"[ROI Selector] {video_path} | Scale {int(SCALING_FACTOR * 100)}%")
+    print(f"[ROI Selector] {source_label} | Scale {int(SCALING_FACTOR * 100)}%")
     print("Left click    → add point  |  Drag → reposition  |  Right click → remove last")
     print("Enter/Space   → confirm polygon, type name, click label position")
     print("'l'           → reposition last label")
@@ -311,7 +385,8 @@ def run(config_path=None):
             if not polygons:
                 print("  No polygons to save. Exiting without changes.")
             else:
-                _save_config(polygons, config_path)
+                _save_config(polygons, config_path,
+                             camera_id=camera_id, cameras_dir=cameras_dir)
             break
 
     cv2.destroyAllWindows()

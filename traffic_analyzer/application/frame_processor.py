@@ -1,5 +1,5 @@
 """
-core/frame_processor.py
+application/frame_processor.py
 
 Processes a single video frame end-to-end and returns the domain events produced.
 
@@ -18,12 +18,12 @@ Part of a three-component pipeline:
 
 import supervision as sv
 
-from traffic_analyzer.core.detector import BaseDetector
-from traffic_analyzer.core.tracker import BaseTracker
-from traffic_analyzer.core.event_builder import EventBuilder
-from traffic_analyzer.core.ghost_track_manager import GhostTrackManager
+from traffic_analyzer.adapters.detector import BaseDetector
+from traffic_analyzer.adapters.tracker import BaseTracker
+from traffic_analyzer.application.event_builder import EventBuilder
+from traffic_analyzer.visualization.ghost_track_manager import GhostTrackManager
 from traffic_analyzer.visualization.renderer import Renderer
-from traffic_analyzer.utils.config_loader import AppConfig
+from traffic_analyzer.infrastructure.config_loader import AppConfig
 
 
 class FrameProcessor:
@@ -62,8 +62,7 @@ class FrameProcessor:
         frame_h = frame.shape[0]
 
         results    = self._detector.detect(frame)
-        detections = sv.Detections.from_ultralytics(results)
-        detections = self._tracker.update(detections, frame)
+        detections = self._tracker.update(results, frame)
 
         active_tracks = []
         active_ids    = set()
@@ -71,16 +70,17 @@ class FrameProcessor:
         for i in range(len(detections)):
             tid    = int(detections.tracker_id[i])
             cls_id = int(detections.class_id[i])
+            if cls_id == -1:
+                continue  # skip background detections
             x1, y1, x2, y2 = map(int, detections.xyxy[i])
             box = (x1, y1, x2, y2)
 
             active_ids.add(tid)
-            # Single source of truth: VehicleMetrics lives inside EventBuilder.
-            self._event_builder.vm.update(tid, box, frame_id, frame_h, cls_id)
             self._ghost_manager.update(tid, box, cls_id, frame_id)
             active_tracks.append({"tid": tid, "cls_id": cls_id, "box": box})
 
         # Produce domain events — no publishing here, caller decides transport.
+        # vm.update() is called inside EventBuilder.update() for each active track.
         events = self._event_builder.update(frame_id, frame_h, active_tracks)
 
         # ── Render overlays (in-place) ────────────────────────────────────

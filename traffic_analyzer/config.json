@@ -1,163 +1,165 @@
 {
-    "camera_settings": {
-        "source_id": "IZM-HIGHWAY-01",
-        "video_path": "test_video4.mp4",
-        "display_width": 960,
-        "k_factor": 0.05
+  "influx_settings": {
+    "url": "http://localhost:8086",
+    "token": "",
+    "org": "myorg",
+    "bucket": "traffic_metrics"
+  },
+  "camera_settings": {
+    "source_id": "IZM-HIGHWAY-01",
+    "video_path": "test_video4.mp4",
+    "display_width": 960
+  },
+  "model_settings": {
+    "model_path": "best.pt",
+    "threshold": 0.30,
+    "resolution": 880
+  },
+  "lanes": {
+    "Right_Lane": {
+      "expected_direction": "top_to_bottom",
+      "roi": [
+        1117,
+        296,
+        1914,
+        1029
+      ],
+      "points": [
+        [
+          1117,
+          296
+        ],
+        [
+          1262,
+          296
+        ],
+        [
+          1416,
+          435
+        ],
+        [
+          1914,
+          831
+        ],
+        [
+          1911,
+          1029
+        ],
+        [
+          1286,
+          1029
+        ],
+        [
+          1119,
+          297
+        ]
+      ],
+      "label_pt": [
+        1293,
+        1004
+      ]
     },
-    "model_settings": {
-        "yolo_path": "yolov8m.pt",
-        "conf_threshold": 0.20,
-        "imgsz": 960,
-        "half": true,
-        "iou": 0.3,
-        "agnostic_nms": true
+    "Middle_Lane": {
+      "expected_direction": "bottom_to_top",
+      "roi": [
+        27,
+        299,
+        1138,
+        1011
+      ],
+      "points": [
+        [
+          918,
+          299
+        ],
+        [
+          1077,
+          301
+        ],
+        [
+          1032,
+          467
+        ],
+        [
+          1116,
+          621
+        ],
+        [
+          1138,
+          1011
+        ],
+        [
+          27,
+          1005
+        ],
+        [
+          759,
+          442
+        ],
+        [
+          920,
+          299
+        ]
+      ],
+      "label_pt": [
+        969,
+        994
+      ]
     },
-    "lanes": {
-        "Right_Lane": {
-            "expected_direction": "bottom_to_top",
-            "roi": [
-                1117,
-                296,
-                1914,
-                1029
-            ],
-            "points": [
-                [
-                    1117,
-                    296
-                ],
-                [
-                    1262,
-                    296
-                ],
-                [
-                    1416,
-                    435
-                ],
-                [
-                    1914,
-                    831
-                ],
-                [
-                    1911,
-                    1029
-                ],
-                [
-                    1286,
-                    1029
-                ],
-                [
-                    1119,
-                    297
-                ]
-            ],
-            "label_pt": [
-                1293,
-                1004
-            ]
-        },
-        "Middle_Lane": {
-            "expected_direction": "bottom_to_top",
-            "roi": [
-                27,
-                299,
-                1138,
-                1011
-            ],
-            "points": [
-                [
-                    918,
-                    299
-                ],
-                [
-                    1077,
-                    301
-                ],
-                [
-                    1032,
-                    467
-                ],
-                [
-                    1116,
-                    621
-                ],
-                [
-                    1138,
-                    1011
-                ],
-                [
-                    27,
-                    1005
-                ],
-                [
-                    759,
-                    442
-                ],
-                [
-                    920,
-                    299
-                ]
-            ],
-            "label_pt": [
-                969,
-                994
-            ]
-        },
-        "Left_Lane": {
-            "expected_direction": "bottom_to_top",
-            "roi": [
-                4,
-                339,
-                759,
-                1007
-            ],
-            "points": [
-                [
-                    384,
-                    387
-                ],
-                [
-                    467,
-                    339
-                ],
-                [
-                    654,
-                    361
-                ],
-                [
-                    747,
-                    384
-                ],
-                [
-                    759,
-                    435
-                ],
-                [
-                    10,
-                    1007
-                ],
-                [
-                    4,
-                    675
-                ],
-                [
-                    394,
-                    474
-                ],
-                [
-                    442,
-                    422
-                ],
-                [
-                    384,
-                    386
-                ]
-            ],
-            "label_pt": [
-                23,
-                965
-            ]
-        }
+    "Left_Lane": {
+      "expected_direction": "bottom_to_top",
+      "roi": [
+        4,
+        339,
+        759,
+        1007
+      ],
+      "points": [
+        [
+          384,
+          387
+        ],
+        [
+          467,
+          339
+        ],
+        [
+          654,
+          361
+        ],
+        [
+          747,
+          384
+        ],
+        [
+          759,
+          435
+        ],
+        [
+          10,
+          1007
+        ],
+        [
+          4,
+          675
+        ],
+        [
+          394,
+          474
+        ],
+        [
+          442,
+          422
+        ],
+        [
+          384,
+          386
+        ]
+      ],
+      "label_pt": [
+        23,
+        965
+      ]
     }
+  }
 }

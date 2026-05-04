@@ -1,5 +1,5 @@
 """
-core/scene_metrics.py
+services/scene_metrics.py
 
 Scene-level traffic metrics: lane assignment, occupancy, and status classification.
 
@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from typing import List, Optional, Tuple
 
-from traffic_analyzer.utils.config_loader import LaneConfig
+from traffic_analyzer.infrastructure.config_loader import LaneConfig
 
 # ── Traffic status thresholds (px/s — calibrate per camera after deployment) ──
 # Typical highway camera at 0.5 scale: free-flow ~120-200 px/s, slow ~40 px/s

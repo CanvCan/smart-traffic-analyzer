@@ -1,5 +1,5 @@
 """
-core/anomaly_detector.py
+services/anomaly_detector.py
 
 Evaluates anomaly conditions for individual vehicle tracks.
 
@@ -12,7 +12,7 @@ Kinematic state is delegated entirely to VehicleMetrics; this class only
 applies the decision logic and returns a typed AnomalyResult value object.
 """
 
-from traffic_analyzer.core.vehicle_metrics import VehicleMetrics
+from traffic_analyzer.services.vehicle_metrics import VehicleMetrics
 from traffic_analyzer.domain.models import AnomalyResult, AnomalyType
 
 # Maps each direction string to its exact opposite.

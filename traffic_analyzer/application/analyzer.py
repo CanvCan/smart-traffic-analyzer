@@ -1,5 +1,5 @@
 """
-core/analyzer.py
+application/analyzer.py
 
 Top-level orchestrator for the traffic analysis pipeline.
 
@@ -18,8 +18,8 @@ All business logic lives in the injected components:
   IEventPublisher — event transport (Kafka, console, or any adapter)
 """
 
-from traffic_analyzer.core.frame_processor import FrameProcessor
-from traffic_analyzer.core.video_loop import VideoLoop
+from traffic_analyzer.application.frame_processor import FrameProcessor
+from traffic_analyzer.infrastructure.video_loop import VideoLoop
 from traffic_analyzer.domain.ports import IEventPublisher
 
 
@@ -27,7 +27,7 @@ class Analyzer:
     """
     Top-level orchestrator for the traffic analysis pipeline.
 
-    Inject all dependencies from main.py (Composition Root).
+    Inject all dependencies from launcher/app.py (Composition Root).
     """
 
     def __init__(self,

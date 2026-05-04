@@ -13,21 +13,29 @@ from typing import Optional, Tuple
 
 
 class VehicleClass(Enum):
-    """Domain representation of detectable vehicle types."""
+    """Domain representation of detectable vehicle types.
 
-    CAR        = 2
+    Class IDs match RF-DETR best.pt output:
+      0=bus, 1=car, 2=dolmus, 3=motorcycle, 4=taxi, 5=truck
+    """
+
+    BUS        = 0
+    CAR        = 1
+    DOLMUS     = 2
     MOTORCYCLE = 3
-    BUS        = 5
-    TRUCK      = 7
+    TAXI       = 4
+    TRUCK      = 5
     UNKNOWN    = -1
 
     @property
     def label(self) -> str:
         """Human-readable display name used in events and UI."""
         return {
-            VehicleClass.CAR:        "Car",
-            VehicleClass.MOTORCYCLE: "Motorcycle",
             VehicleClass.BUS:        "Bus",
+            VehicleClass.CAR:        "Car",
+            VehicleClass.DOLMUS:     "Dolmus",
+            VehicleClass.MOTORCYCLE: "Motorcycle",
+            VehicleClass.TAXI:       "Taxi",
             VehicleClass.TRUCK:      "Truck",
             VehicleClass.UNKNOWN:    "Vehicle",
         }[self]
@@ -39,7 +47,7 @@ class VehicleClass(Enum):
 
     @classmethod
     def from_id(cls, class_id: int) -> "VehicleClass":
-        """Convert a YOLO class integer to VehicleClass. Returns UNKNOWN on invalid id."""
+        """Convert an RF-DETR class integer to VehicleClass. Returns UNKNOWN on invalid id."""
         try:
             return cls(class_id)
         except ValueError:

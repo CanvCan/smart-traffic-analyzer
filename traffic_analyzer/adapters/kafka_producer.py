@@ -1,5 +1,5 @@
 """
-kafka_layer/kafka_producer.py
+adapters/kafka_producer.py
 
 Thin Kafka producer wrapper that implements IEventPublisher.
 

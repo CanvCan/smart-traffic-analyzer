@@ -362,31 +362,20 @@ class Q9Writer(BaseInfluxWriter):
     Tags        : camera_id, lane
     Fields      : avg_vehicle_count, max_vehicle_count
 
-    Pivots wide row (one per window) to one InfluxDB point per lane.
+    One row per (window, camera_id, lane) — produced by explode() in stream_processor.
+    Handles any lane configuration dynamically; no hardcoded lane names.
     """
 
     def build_points(self, rows) -> list:
-        points = []
-        for row in rows:
-            camera_id = _cam(row)
-            for lane, avg_col, max_col in [
-                ("Right_Lane",  "right_lane_avg",  "right_lane_max"),
-                ("Middle_Lane", "middle_lane_avg", "middle_lane_max"),
-                ("Left_Lane",   "left_lane_avg",   "left_lane_max"),
-            ]:
-                avg_val = row[avg_col]
-                max_val = row[max_col]
-                if avg_val is None and max_val is None:
-                    continue
-                p = (
-                    Point("lane_occupancy")
-                    .tag("camera_id", camera_id)
-                    .tag("lane", lane)
-                    .field("avg_vehicle_count", float(avg_val or 0))
-                    .field("max_vehicle_count", int(max_val or 0))
-                )
-                points.append(p)
-        return points
+        return [
+            Point("lane_occupancy")
+            .tag("camera_id", _cam(row))
+            .tag("lane", row["lane"] or "unknown")
+            .field("avg_vehicle_count", float(row["avg_vehicle_count"] or 0))
+            .field("max_vehicle_count", int(row["max_vehicle_count"] or 0))
+            for row in rows
+            if row["avg_vehicle_count"] is not None or row["max_vehicle_count"] is not None
+        ]
 
 
 # ── Q10 — Direction analysis ──────────────────────────────────────────────────
@@ -416,7 +405,7 @@ class Q11Writer(BaseInfluxWriter):
     """
     Measurement : vehicle_class_breakdown
     Tags        : camera_id
-    Fields      : avg_car, avg_motorcycle, avg_bus, avg_truck, avg_total
+    Fields      : avg_car, avg_motorcycle, avg_bus, avg_truck, avg_dolmus, avg_taxi, avg_total
     """
 
     def build_points(self, rows) -> list:
@@ -427,6 +416,8 @@ class Q11Writer(BaseInfluxWriter):
             .field("avg_motorcycle", float(row["avg_motorcycle"] or 0))
             .field("avg_bus",        float(row["avg_bus"] or 0))
             .field("avg_truck",      float(row["avg_truck"] or 0))
+            .field("avg_dolmus",     float(row["avg_dolmus"] or 0))
+            .field("avg_taxi",       float(row["avg_taxi"] or 0))
             .field("avg_total",      float(row["avg_total"] or 0))
             for row in rows
         ]
