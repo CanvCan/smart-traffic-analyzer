@@ -145,6 +145,8 @@ GraduationProject/
 - Python 3.10+
 - CUDA destekli GPU (önerilir, CPU'da da çalışır)
 - Docker Desktop
+- Java 17 (Spark için zorunlu)
+- Hadoop winutils (Windows için zorunlu)
 
 ### Python Bağımlılıkları
 
@@ -164,6 +166,19 @@ Bu komut şunları başlatır:
 - **Kafka** — `localhost:9092` (KRaft modu)
 - **InfluxDB** — `http://localhost:8086` (org: `myorg`, bucket: `traffic_metrics`)
 - **Grafana** — `http://localhost:3000`
+
+### Windows — Spark Ortam Değişkenleri
+
+Spark'ı çalıştırmadan önce her PowerShell oturumunda aşağıdaki komutları çalıştırın:
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.18.8-hotspot"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+$env:HADOOP_HOME = "C:\hadoop"
+$env:PATH = "$env:HADOOP_HOME\bin;$env:PATH"
+```
+
+> Bu değişkenler kalıcı olarak sistem ortam değişkenlerine de eklenebilir (Sistem Özellikleri → Gelişmiş → Ortam Değişkenleri).
 
 ### Kafka Topic Oluşturma
 
