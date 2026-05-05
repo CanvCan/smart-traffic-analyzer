@@ -94,7 +94,6 @@ class FrameProcessor:
             self._renderer.draw_vehicle(frame, *ghost["box"],
                                         ghost["tid"], ghost["cls_id"], ghost=True)
 
-        self._renderer.draw_legend(frame)
         self._ghost_manager.cleanup(frame_id)
 
         return events
