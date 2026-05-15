@@ -149,9 +149,9 @@ class InfluxPublisher(IEventPublisher):
         try:
             import os
             from dotenv import load_dotenv
-            load_dotenv()   # proje kökündeki .env dosyasını yükle
+            load_dotenv()   # load .env from project root
 
-            # config.json'da token yoksa INFLUXDB_TOKEN env değişkenine bak
+            # fall back to INFLUXDB_TOKEN env var if token is absent in config.json
             resolved_token = token or os.environ.get("INFLUXDB_TOKEN", "")
 
             from influxdb_client import InfluxDBClient
