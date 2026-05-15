@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""launcher/app.py — Smart Traffic Analyzer Başlatıcı"""
+"""launcher/app.py — Smart Traffic Analyzer launcher / composition root"""
 from __future__ import annotations
 import threading
 from pathlib import Path
@@ -12,32 +12,32 @@ _CFG_PATH    = _ROOT / "traffic_analyzer" / "config.json"
 _CAMERAS_DIR = _ROOT / "traffic_analyzer" / "cameras"
 
 def _cam_file_id(cam) -> str:
-    """Dosya adı için kullanılan kamera anahtarı — kamera adı, boşluklar _ ile."""
+    """Camera key used as a filename — camera name with spaces replaced by underscores."""
     return cam.name.replace(" ", "_")
 
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ── Pastel koyu palet ──────────────────────────────────────────────────────
-BG      = "#1e1e2e"
-SURFACE = "#252535"
-CARD    = "#2a2a3e"
-BORDER  = "#383858"
-SEL_BG  = "#1e2d3d"
-SEL_BOR = "#7eb8c9"
+# ── Unified deep-space palette (shared with roi_selector) ──────────────────
+BG      = "#0b0b14"
+SURFACE = "#111120"
+CARD    = "#181828"
+BORDER  = "#2d2d50"
+SEL_BG  = "#131828"
+SEL_BOR = "#6c8efa"
 
-FG      = "#cdd6f4"
-FG_MED  = "#a6adc8"
-FG_DIM  = "#585b70"
+FG      = "#e8e8f4"
+FG_MED  = "#8a8ab0"
+FG_DIM  = "#40405c"
 
-BLUE    = "#89b4fa"
-TEAL    = "#7eb8c9"
-GREEN   = "#a6e3a1"
-GREEN_D = "#1e3a28"
-YELLOW  = "#f9e2af"
-YELLOW_D= "#2e2510"
-RED     = "#f38ba8"
+BLUE    = "#6c8efa"
+TEAL    = "#5bbdcc"
+GREEN   = "#4ade96"
+GREEN_D = "#0d2b1f"
+YELLOW  = "#f5a832"
+YELLOW_D= "#2a1c06"
+RED     = "#f06080"
 
 F_TITLE = ("Segoe UI", 17, "bold")
 F_HEAD  = ("Segoe UI", 11, "bold")
@@ -48,9 +48,9 @@ F_MONO  = ("Consolas", 9)
 
 # ─────────────────────────────────────────────────────────────────────────────
 class CameraRow(ctk.CTkFrame):
-    """Tek satır kamera kartı — kompakt."""
+    """Single-row camera card — compact list item."""
 
-    H = 38   # piksel yükseklik
+    H = 38   # row height in pixels
 
     def __init__(self, master, camera, has_roi: bool, on_select, **kw):
         super().__init__(master, height=self.H, corner_radius=6,
@@ -66,18 +66,18 @@ class CameraRow(ctk.CTkFrame):
             w.bind("<Button-1>", self._click)
 
     def _build(self):
-        # ROI noktası (sol)
+        # ROI status dot (left)
         self._dot = ctk.CTkLabel(self, text="●", width=18,
                                   font=("Segoe UI", 10),
                                   text_color=GREEN if self._has_roi else FG_DIM)
         self._dot.pack(side="left", padx=(8, 2))
 
-        # Kamera adı
+        # Camera name
         self._name = ctk.CTkLabel(self, text=self._cam.name,
                                    font=F_BODY, text_color=FG, anchor="w")
         self._name.pack(side="left", fill="x", expand=True)
 
-        # ID (sağda küçük)
+        # Camera ID (right-aligned, small)
         self._id = ctk.CTkLabel(self, text=self._cam.camera_id,
                                  font=F_MONO, text_color=FG_DIM, width=130, anchor="e")
         self._id.pack(side="right", padx=(0, 10))
@@ -106,8 +106,7 @@ class LauncherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Smart Traffic Analyzer")
-        self.geometry("780x580")
-        self.minsize(700, 500)
+        self.minsize(860, 620)
         self.configure(fg_color=BG)
 
         self._cameras: list              = []
@@ -125,7 +124,7 @@ class LauncherApp(ctk.CTk):
 
     # ──────────────────────────────────────────────────────────────────────────
     def _build(self):
-        # Başlık
+        # Title bar
         top = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=56)
         top.pack(fill="x")
         top.pack_propagate(False)
@@ -141,7 +140,7 @@ class LauncherApp(ctk.CTk):
         ctk.CTkFrame(self, height=1, fg_color=BORDER,
                      corner_radius=0).pack(fill="x")
 
-        # Kaynak seçici
+        # Source selector
         src = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, height=44)
         src.pack(fill="x", padx=18, pady=(10, 0))
         src.pack_propagate(False)
@@ -157,7 +156,7 @@ class LauncherApp(ctk.CTk):
                 fg_color=TEAL, hover_color=SEL_BOR,
             ).pack(side="left", padx=(0, 22))
 
-        # İçerik
+        # Content panels
         self._live = self._make_live_panel()
         self._file = self._make_file_panel()
 
@@ -165,7 +164,7 @@ class LauncherApp(ctk.CTk):
         self._make_bottom()
         self._toggle_source()
 
-    # ── Canlı panel ───────────────────────────────────────────────────────────
+    # ── Live camera panel ─────────────────────────────────────────────────────
     def _make_live_panel(self):
         p = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
 
@@ -202,7 +201,7 @@ class LauncherApp(ctk.CTk):
             font=F_BODY, text_color=FG_DIM)
         self._load_lbl.pack(pady=30)
 
-        # Seçili kamera bilgisi — tek satır
+        # Selected camera info bar — single row
         info = ctk.CTkFrame(p, fg_color=CARD, corner_radius=8,
                              border_color=BORDER, border_width=1, height=36)
         info.pack(fill="x", padx=18, pady=(0, 2))
@@ -372,28 +371,27 @@ class LauncherApp(ctk.CTk):
                 messagebox.showwarning("Uyarı", "Önce bir kamera seçin.")
                 return
             cam = self._sel_row._cam
-            self.withdraw()
+            # Keep launcher visible so CTkToplevel has a visible parent on Windows
             try:
                 from traffic_analyzer.visualization.roi_selector import run as roi_run
                 roi_run(config_path=str(_CFG_PATH), camera_id=_cam_file_id(cam),
                         stream_url=cam.stream_url, cameras_dir=_CAMERAS_DIR)
             finally:
-                self.deiconify()
                 self._sel_row.refresh_roi()
                 self._on_select(self._sel_row)
                 self._set_status("ROI kaydedildi.", GREEN)
+                self._bring_to_front()
         else:
             if not self._filepath.get().strip():
                 messagebox.showwarning("Uyarı", "Önce bir video dosyası seçin.")
                 return
-            self.withdraw()
             try:
                 from traffic_analyzer.visualization.roi_selector import run as roi_run
                 roi_run(config_path=str(_CFG_PATH), camera_id="local",
                         cameras_dir=_CAMERAS_DIR)
             finally:
-                self.deiconify()
                 self._set_status("ROI kaydedildi.", GREEN)
+                self._bring_to_front()
 
     # ──────────────────────────────────────────────────────────────────────────
     def _start(self):
@@ -409,13 +407,13 @@ class LauncherApp(ctk.CTk):
             if not vp:
                 messagebox.showwarning("Uyarı", "Önce bir video dosyası seçin.")
                 return
-            # Göreli yolları traffic_analyzer/ klasörüne göre çöz
+            # Resolve relative paths against the traffic_analyzer/ directory
             vp_path = Path(vp)
             if not vp_path.is_absolute():
                 vp_path = (_CFG_PATH.parent / vp_path).resolve()
             src, cid, lbl = str(vp_path), "local", vp_path.name
 
-        # ROI kontrolü
+        # ROI check
         try:
             from traffic_analyzer.infrastructure.config_loader import load_camera_lanes
             has_lanes = bool(load_camera_lanes(cid, _CAMERAS_DIR))
@@ -441,12 +439,27 @@ class LauncherApp(ctk.CTk):
         self._start_btn.configure(state="disabled", text="Çalışıyor...")
         self._set_status(f"Bağlanıyor: {lbl}", YELLOW)
         self.withdraw()
-        try:
-            self._pipeline(src, cid, visual_only=not has_lanes)
-        finally:
+
+        def _on_done():
+            """Runs on the tkinter main thread after the pipeline finishes."""
             self.deiconify()
+            self._bring_to_front()
             self._start_btn.configure(state="normal", text="▶  Başlat")
             self._set_status("Analiz tamamlandı.", GREEN)
+
+        def _run():
+            """Runs the pipeline in a background thread so tkinter stays responsive."""
+            try:
+                self._pipeline(src, cid, visual_only=not has_lanes)
+            except Exception as e:
+                print(f"[Launcher] Pipeline error: {e}")
+            finally:
+                import cv2 as _cv2
+                _cv2.destroyAllWindows()
+                _cv2.waitKey(1)
+                self.after(0, _on_done)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _pipeline(self, video_source: str, camera_id: str, visual_only: bool = False):
         import torch
@@ -503,14 +516,23 @@ class LauncherApp(ctk.CTk):
             frame_processor=processor, publisher=publisher).run()
 
     # ──────────────────────────────────────────────────────────────────────────
+    def _bring_to_front(self):
+        """Force the window to the foreground on Windows."""
+        self.update()
+        self.lift()
+        self.wm_attributes("-topmost", True)
+        self.after(50, lambda: self.wm_attributes("-topmost", False))
+        self.focus_force()
+
     def _set_status(self, msg: str, color: str = FG_DIM):
         self._status_lbl.configure(text=msg, text_color=color)
 
     def _center(self):
+        w, h = 1060, 720
+        self.geometry(f"{w}x{h}")
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        w,  h  = self.winfo_width(),       self.winfo_height()
-        self.geometry(f"+{(sw-w)//2}+{(sh-h)//2}")
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
 def main():
