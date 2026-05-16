@@ -41,10 +41,14 @@ class Camera:
 
 
 def _pick(obj: dict, candidates: list[str], fallback: str = "") -> str:
-    """Return the value of the first matching key found in obj."""
+    """Return the value of the first matching key found in obj.
+
+    Normalises whitespace so non-breaking spaces, narrow spaces, or other
+    Unicode whitespace variants from the API collapse to standard spaces.
+    """
     for key in candidates:
         if key in obj and obj[key]:
-            return str(obj[key])
+            return " ".join(str(obj[key]).split())
     return fallback
 
 

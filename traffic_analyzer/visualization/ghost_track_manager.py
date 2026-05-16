@@ -7,6 +7,16 @@ known bounding box is still drawn for up to `ghost_frames` frames.
 """
 
 
+DEFAULT_GHOST_FRAMES = 30
+"""Default number of frames a lost track is rendered as a ghost.
+
+ByteTracker's ``lost_track_buffer`` (default 150 frames) controls the
+re-ID window — a vehicle reappearing within that window gets the same ID.
+30 frames (~1 s at 30 FPS) shows brief occlusions without leaving stale
+boxes on screen too long.
+"""
+
+
 class GhostTrackManager:
     """
     Tracks the last known position and class of each vehicle so that

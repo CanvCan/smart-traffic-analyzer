@@ -1,56 +1,34 @@
+"""
+visualization/frame_renderer.py
+
+Live-frame renderer — draws lane overlays, vehicle bounding boxes, ghost
+tracks, and the class legend directly onto BGR numpy frames (in-place).
+
+All PIL font work is delegated to _pil_utils so the font cache is shared
+with ROIRenderer and font fallback paths live in one place.
+"""
+from __future__ import annotations
+
+from typing import Tuple, List
+
 import cv2
 import numpy as np
-from typing import Tuple, List
-from traffic_analyzer.visualization.colors import CLASS_COLORS, CLASS_LABELS, LANE_PALETTE
+
+from traffic_analyzer.visualization.colors     import CLASS_COLORS, CLASS_LABELS, LANE_PALETTE
+from traffic_analyzer.visualization._pil_utils import pil_text
 from traffic_analyzer.infrastructure.config_loader import LaneConfig
 
-# ── PIL text helper (Unicode / Turkish support) ───────────────────────────────
-_PIL_FONTS: dict = {}
 
-
-def _pil_font(size: int):
-    from PIL import ImageFont
-    if size not in _PIL_FONTS:
-        for path in ["C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf"]:
-            try:
-                _PIL_FONTS[size] = ImageFont.truetype(path, size)
-                return _PIL_FONTS[size]
-            except OSError:
-                pass
-        _PIL_FONTS[size] = ImageFont.load_default()
-    return _PIL_FONTS[size]
-
-
-def _pil_text(img: np.ndarray, text: str, x: int, y: int,
-              font_size: int, color_bgr: tuple, shadow: bool = True) -> None:
-    from PIL import Image, ImageDraw
-    pil = Image.fromarray(img[:, :, ::-1])
-    draw = ImageDraw.Draw(pil)
-    font = _pil_font(font_size)
-    cr, cg, cb = color_bgr[2], color_bgr[1], color_bgr[0]
-    if shadow:
-        draw.text((x + 1, y + 1), text, font=font, fill=(0, 0, 0))
-    draw.text((x, y), text, font=font, fill=(cr, cg, cb))
-    img[:] = np.array(pil)[:, :, ::-1]
-
-# Ghost duration: how long the last known bbox is shown after a track disappears.
-# ByteTracker's lost_track_buffer (default 150 frames) controls re-ID window —
-# a vehicle reappearing within that window gets the same ID with a visual gap.
-# 30 frames (~1 second at 30 FPS) gives enough time to see brief occlusions
-# without leaving stale boxes on screen too long.
-GHOST_FRAMES = 30
-
-
-class Renderer:
+class FrameRenderer:
     """
-    Handles all OpenCV drawing operations.
-    Keeps visualization logic fully decoupled from detection/tracking.
+    Handles all OpenCV drawing operations for the live analysis pipeline.
+    Visualization logic is fully decoupled from detection and tracking.
     """
 
     def draw_lanes(self, frame, lanes: List[LaneConfig]) -> None:
         overlay = frame.copy()
 
-        # ── Fill pass ────────────────────────────────────────────────────
+        # Fill pass — translucent polygon / rectangle fills
         for i, lane in enumerate(lanes):
             c = LANE_PALETTE[i % len(LANE_PALETTE)]
             if lane.points:
@@ -62,12 +40,10 @@ class Renderer:
 
         cv2.addWeighted(overlay, 0.10, frame, 0.90, 0, frame)
 
-        # ── Outline + label pass ─────────────────────────────────────────
-        # Draw outlines and labels
+        # Outline + label pass
         for i, lane in enumerate(lanes):
             c = LANE_PALETTE[i % len(LANE_PALETTE)]
 
-            # Outline
             if lane.points:
                 pts = np.array(lane.points, dtype=np.int32)
                 cv2.polylines(frame, [pts], isClosed=True, color=c, thickness=2)
@@ -75,17 +51,16 @@ class Renderer:
                 r = lane.roi
                 cv2.rectangle(frame, (r[0], r[1]), (r[2], r[3]), c, 2)
 
-            # Label — use manual label_pt if set, otherwise skip
             if lane.label_pt and len(lane.label_pt) == 2:
                 lx, ly = int(lane.label_pt[0]), int(lane.label_pt[1])
-                _pil_text(frame, lane.name, lx, ly, 14, c, shadow=True)
+                pil_text(frame, lane.name, lx, ly, 14, c, shadow=True)
 
     def draw_vehicle(self, frame, x1: int, y1: int, x2: int, y2: int,
                      track_id: int, cls_id: int, ghost: bool = False) -> None:
         color = CLASS_COLORS.get(cls_id, (200, 200, 200))
         label = f"#{track_id} {CLASS_LABELS.get(cls_id, 'Vehicle')}"
-        c = tuple(int(v * 0.5) for v in color) if ghost else color
-        clen = min(int((x2 - x1) * 0.22), int((y2 - y1) * 0.22), 16)
+        c     = tuple(int(v * 0.5) for v in color) if ghost else color
+        clen  = min(int((x2 - x1) * 0.22), int((y2 - y1) * 0.22), 16)
 
         if ghost:
             self._draw_dashed_box(frame, x1, y1, x2, y2, c)
@@ -96,9 +71,10 @@ class Renderer:
 
     def draw_legend(self, frame) -> None:
         x, y = 12, 12
-        gap = 26
-        w = 175
-        h = 12 + gap * len(CLASS_COLORS)
+        gap  = 26
+        w    = 175
+        h    = 12 + gap * len(CLASS_COLORS)
+
         overlay = frame.copy()
         cv2.rectangle(overlay, (x, y), (x + w, y + h), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
@@ -109,6 +85,8 @@ class Renderer:
             cv2.rectangle(frame, (x + 8, cy - 7), (x + 24, cy + 7), color, -1)
             cv2.putText(frame, CLASS_LABELS[cls_id], (x + 32, cy + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.60, (220, 220, 220), 1, cv2.LINE_AA)
+
+    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _draw_corner_box(self, frame, x1, y1, x2, y2,
                          color: Tuple, clen: int) -> None:
@@ -134,7 +112,6 @@ class Renderer:
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         lx = x1
         ly = y1 - 4 if y1 - 4 - th - 4 >= 0 else y2 + th + 6
-        # class-coloured background (semi-transparent)
         overlay = frame.copy()
         cv2.rectangle(overlay, (lx, ly - th - 4), (lx + tw + 6, ly + 2), color, -1)
         cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)

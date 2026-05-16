@@ -18,6 +18,8 @@ All business logic lives in the injected components:
   IEventPublisher — event transport (Kafka, console, or any adapter)
 """
 
+import threading
+
 from traffic_analyzer.application.frame_processor import FrameProcessor
 from traffic_analyzer.infrastructure.video_loop import VideoLoop
 from traffic_analyzer.domain.ports import IEventPublisher
@@ -46,7 +48,12 @@ class Analyzer:
                 on_events=self._publish_all,
             )
         finally:
-            self._publisher.close()
+            # Close the publisher in a daemon thread so that a slow Kafka
+            # flush/close (e.g. broker unreachable) does not block the caller
+            # from returning to the launcher UI.
+            threading.Thread(
+                target=self._publisher.close, daemon=True, name="publisher-close"
+            ).start()
             print("[Analyzer] Shutdown complete.")
 
     def _publish_all(self, events: list) -> None:

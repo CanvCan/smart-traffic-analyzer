@@ -22,6 +22,34 @@ from typing import Callable, Iterator
 import cv2
 import numpy as np
 
+WIN_NAME = "Smart Traffic Analyzer"
+
+
+def _setup_cv2_window(win_w: int, win_h: int) -> None:
+    """Center the OpenCV window on screen and bring it to the foreground.
+
+    Called once after the first imshow.  Uses ctypes so no extra dependencies
+    are needed beyond the standard Windows API.
+
+    Args:
+        win_w: Displayed frame width in pixels.
+        win_h: Displayed frame height in pixels.
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        scr_w  = user32.GetSystemMetrics(0)   # SM_CXSCREEN
+        scr_h  = user32.GetSystemMetrics(1)   # SM_CYSCREEN
+        x = max((scr_w - win_w) // 2, 0)
+        y = max((scr_h - win_h) // 2, 0)
+        cv2.moveWindow(WIN_NAME, x, y)
+        hwnd = user32.FindWindowW(None, WIN_NAME)
+        if hwnd:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass  # Non-Windows or permission denied — silently skip
+
 
 _MJPEG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -127,9 +155,10 @@ class VideoLoop:
         print(f"[VideoLoop] MJPEG stream: {self._video_path}")
         print("[VideoLoop] q=quit  |  space=pause/resume")
 
-        frame_count = 0
-        paused      = False
-        dw          = self._display_width
+        frame_count  = 0
+        paused       = False
+        dw           = self._display_width
+        window_ready = False
 
         try:
             for frame in _iter_mjpeg(self._video_path):
@@ -150,9 +179,13 @@ class VideoLoop:
                     print(f"[VideoLoop] ERROR frame {frame_count}: {e}")
                     traceback.print_exc()
 
-                h, w = frame.shape[:2]
-                cv2.imshow("Smart Traffic Analyzer",
-                           cv2.resize(frame, (dw, int(dw * h / w))))
+                h, w   = frame.shape[:2]
+                win_h  = int(dw * h / w)
+                cv2.imshow(WIN_NAME, cv2.resize(frame, (dw, win_h)))
+
+                if not window_ready:
+                    _setup_cv2_window(dw, win_h)
+                    window_ready = True
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
@@ -184,9 +217,10 @@ class VideoLoop:
         print(f"[VideoLoop] Processing: {self._video_path}")
         print("[VideoLoop] q=quit  |  space=pause/resume")
 
-        frame_count = 0
-        paused      = False
-        dw          = self._display_width
+        frame_count  = 0
+        paused       = False
+        dw           = self._display_width
+        window_ready = False
 
         try:
             while True:
@@ -203,9 +237,13 @@ class VideoLoop:
                         print(f"[VideoLoop] ERROR frame {frame_count}: {e}")
                         traceback.print_exc()
 
-                    h, w = frame.shape[:2]
-                    cv2.imshow("Smart Traffic Analyzer",
-                               cv2.resize(frame, (dw, int(dw * h / w))))
+                    h, w  = frame.shape[:2]
+                    win_h = int(dw * h / w)
+                    cv2.imshow(WIN_NAME, cv2.resize(frame, (dw, win_h)))
+
+                    if not window_ready:
+                        _setup_cv2_window(dw, win_h)
+                        window_ready = True
 
                 wait_ms = 100 if paused else 1
                 key = cv2.waitKey(wait_ms) & 0xFF
