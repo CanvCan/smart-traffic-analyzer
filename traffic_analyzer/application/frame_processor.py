@@ -22,7 +22,7 @@ from traffic_analyzer.adapters.detector import BaseDetector
 from traffic_analyzer.adapters.tracker import BaseTracker
 from traffic_analyzer.application.event_builder import EventBuilder
 from traffic_analyzer.visualization.ghost_track_manager import GhostTrackManager
-from traffic_analyzer.visualization.renderer import Renderer
+from traffic_analyzer.visualization.frame_renderer import FrameRenderer
 from traffic_analyzer.infrastructure.config_loader import AppConfig
 
 
@@ -38,7 +38,7 @@ class FrameProcessor:
                  detector: BaseDetector,
                  tracker: BaseTracker,
                  event_builder: EventBuilder,
-                 renderer: Renderer,
+                 renderer: FrameRenderer,
                  ghost_manager: GhostTrackManager,
                  config: AppConfig):
         self._detector      = detector
