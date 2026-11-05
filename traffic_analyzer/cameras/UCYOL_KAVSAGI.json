@@ -37,7 +37,14 @@
                 602,
                 402
             ],
-            "expected_direction": "bottom_to_top"
+            "expected_direction": "bottom_to_top",
+            "display_name": "deneme",
+            "visible": true,
+            "locked": false,
+            "order": 0
         }
-    }
+    },
+    "version": 2,
+    "source_id": "UCYOL_KAVSAGI",
+    "display_name": "ÜÇYOL KAVŞAĞI"
 }

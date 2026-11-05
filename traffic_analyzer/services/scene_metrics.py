@@ -2,55 +2,41 @@
 services/scene_metrics.py
 
 Scene-level traffic metrics: lane assignment, occupancy, and status classification.
-
-Design decisions:
-- Occupancy: Merged-interval area to avoid double-counting overlapping boxes
-- Status   : Weighted tri-factor (speed + occupancy + count)
+Supports dynamic scene thresholds injected from `config.json` (`scene_thresholds`).
 """
 
 import cv2
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
-from traffic_analyzer.infrastructure.config_loader import LaneConfig
+from traffic_analyzer.domain.models import LanePolygon
 
-# ── Traffic status thresholds (px/s — calibrate per camera after deployment) ──
-# Typical highway camera at 0.5 scale: free-flow ~120-200 px/s, slow ~40 px/s
-SPEED_FREE = 65.0  # above this → no speed penalty
-SPEED_FLOW = 40.0  # above this → mild penalty
-SPEED_HEAVY = 25.0  # below this → heavy penalty
+SPEED_FREE = 65.0
+SPEED_FLOW = 40.0
+SPEED_HEAVY = 25.0
 SPEED_JAMMED = 15.0
 
-# Occupancy thresholds (fraction of lane area covered by vehicle boxes)
-OCC_FREE = 0.20  # below → no density penalty
-OCC_FLOW = 0.35  # below → mild penalty
-OCC_HEAVY = 0.55  # above → heavy penalty
+OCC_FREE = 0.20
+OCC_FLOW = 0.35
+OCC_HEAVY = 0.55
 OCC_JAMMED = 0.75
 
-# Count thresholds (vehicles visible in lane at once)
 COUNT_FREE = 10
 COUNT_FLOW = 18
 COUNT_HEAVY = 25
 COUNT_JAMMED = 35
 
-# Snapshot interval
-SNAPSHOT_EVERY = 48  # frames
+SNAPSHOT_EVERY = 48
 
 
 class TrafficMetrics:
-    """
-    Stateless scene-level metric calculations.
-    All methods are static — no per-instance state needed.
-    """
+    """Stateless scene-level metric calculations."""
 
     @staticmethod
-    def get_lane(cx: float, cy: float, lanes: List[LaneConfig]) -> Optional[str]:
-        """
-        Point-in-polygon test when polygon points are available,
-        falls back to point-in-rectangle using roi bounding box.
-        Returns the name of the matching lane or None.
-        """
+    def get_lane(cx: float, cy: float, lanes: Sequence[LanePolygon]) -> Optional[str]:
         for lane in lanes:
+            if not getattr(lane, "visible", True):
+                continue
             if lane.points and len(lane.points) >= 3:
                 pts = np.array(lane.points, dtype=np.float32)
                 result = cv2.pointPolygonTest(pts, (float(cx), float(cy)), False)
@@ -65,23 +51,12 @@ class TrafficMetrics:
     @staticmethod
     def occupancy_ratio(boxes: List[Tuple[int, int, int, int]],
                         roi_area: float) -> float:
-        """
-        True union area of bounding boxes via sweep-line algorithm.
-
-        Avoids double-counting when vehicles overlap:
-          1. Build Y-axis events (enter/leave) for each box
-          2. Sweep top-to-bottom; at each Y slab, merge active X-intervals
-          3. Accumulate slab_height * merged_x_length
-
-        O(n^2) in worst case but n < 50 in practice — fast enough per frame.
-        """
         if not boxes or roi_area <= 0:
             return 0.0
 
-        # Collect unique y-boundaries and sort them
         ys = set()
         for x1, y1, x2, y2 in boxes:
-            ys.add(y1);
+            ys.add(y1)
             ys.add(y2)
         ys = sorted(ys)
 
@@ -93,7 +68,6 @@ class TrafficMetrics:
             if slab_h <= 0:
                 continue
 
-            # Collect x-intervals of all boxes that cover this slab
             x_intervals = []
             for x1, y1, x2, y2 in boxes:
                 if y1 <= slab_y1 and y2 >= slab_y2:
@@ -102,7 +76,6 @@ class TrafficMetrics:
             if not x_intervals:
                 continue
 
-            # Merge overlapping x-intervals
             x_intervals.sort()
             merged_x = 0
             cur_x1, cur_x2 = x_intervals[0]
@@ -119,44 +92,42 @@ class TrafficMetrics:
         return round(min(union_area / roi_area, 1.0), 4)
 
     @staticmethod
-    def traffic_status(avg_speed: float, vehicle_count: int,
-                       occupancy: float) -> str:
-        """
-        Weighted tri-factor traffic classification.
-
-        Scoring (0=best, 4=worst):
-          speed_score   — weight 3  (most reliable signal)
-          density_score — weight 2  (true union area, no double-count)
-          count_score   — weight 1  (least reliable, varies by lane length)
-
-        Max score = 24 → bands calibrated so normal highway flow ≈ FREE/FLOW.
-
-        Calibration guide:
-          - Record 30s of free-flow → note avg_speed → set SPEED_FREE ~= that
-          - Record congestion → note occupancy → adjust OCC_HEAVY
-        """
+    def traffic_status(
+        avg_speed: float,
+        vehicle_count: int,
+        occupancy: float,
+        thresholds: Optional[Any] = None,
+    ) -> str:
         if vehicle_count == 0:
             return "FREE"
 
-        # Speed score (weight 3)
+        spd_free = float(getattr(thresholds, "speed_free", SPEED_FREE)) if thresholds else SPEED_FREE
+        spd_flow = float(getattr(thresholds, "speed_flow", SPEED_FLOW)) if thresholds else SPEED_FLOW
+        spd_heavy = float(getattr(thresholds, "speed_heavy", SPEED_HEAVY)) if thresholds else SPEED_HEAVY
+        spd_jammed = float(getattr(thresholds, "speed_jammed", SPEED_JAMMED)) if thresholds else SPEED_JAMMED
+
+        occ_free = float(getattr(thresholds, "occ_free", OCC_FREE)) if thresholds else OCC_FREE
+        occ_jammed = float(getattr(thresholds, "occ_jammed", OCC_JAMMED)) if thresholds else OCC_JAMMED
+        occ_span = max(0.05, occ_jammed - occ_free)
+        occ_flow = float(getattr(thresholds, "occ_flow", occ_free + occ_span * 0.27)) if thresholds else OCC_FLOW
+        occ_heavy = float(getattr(thresholds, "occ_heavy", occ_free + occ_span * 0.64)) if thresholds else OCC_HEAVY
+
         speed_score = (
-            0 if avg_speed >= SPEED_FREE else
-            1 if avg_speed >= SPEED_FLOW else
-            2 if avg_speed >= SPEED_HEAVY else
-            3 if avg_speed >= SPEED_JAMMED else
+            0 if avg_speed >= spd_free else
+            1 if avg_speed >= spd_flow else
+            2 if avg_speed >= spd_heavy else
+            3 if avg_speed >= spd_jammed else
             4
         )
 
-        # Occupancy score (weight 2)
         density_score = (
-            0 if occupancy < OCC_FREE else
-            1 if occupancy < OCC_FLOW else
-            2 if occupancy < OCC_HEAVY else
-            3 if occupancy < OCC_JAMMED else
+            0 if occupancy < occ_free else
+            1 if occupancy < occ_flow else
+            2 if occupancy < occ_heavy else
+            3 if occupancy < occ_jammed else
             4
         )
 
-        # Count score (weight 1)
         count_score = (
             0 if vehicle_count <= COUNT_FREE else
             1 if vehicle_count <= COUNT_FLOW else
@@ -166,7 +137,6 @@ class TrafficMetrics:
         )
 
         total = speed_score * 3 + density_score * 2 + count_score * 1
-        # Max possible = 4*3 + 4*2 + 4*1 = 24  →  FREE ≤ 4, FLOW ≤ 9, HEAVY ≤ 16, else JAMMED
 
         if total <= 4:
             return "FREE"
@@ -178,15 +148,12 @@ class TrafficMetrics:
             return "JAMMED"
 
     @staticmethod
-    def roi_total_area(lanes: List[LaneConfig]) -> float:
-        """
-        Sum of lane areas. Uses shoelace formula for polygons,
-        falls back to bounding-box area when no polygon points exist.
-        """
+    def roi_total_area(lanes: Sequence[LanePolygon]) -> float:
         total = 0.0
         for lane in lanes:
+            if not getattr(lane, "visible", True):
+                continue
             if lane.points and len(lane.points) >= 3:
-                # Shoelace formula for polygon area
                 pts = lane.points
                 n = len(pts)
                 area = 0.0

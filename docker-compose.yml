@@ -11,10 +11,11 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -31,7 +32,6 @@ services:
       retries: 5
 
   # ── Kafka Topic Init ──────────────────────────────────────────────────────
-  # to generate topics automatically, otherwise the broker will shut down.
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka_init
@@ -40,8 +40,8 @@ services:
         condition: service_healthy
     entrypoint: [ "/bin/sh", "-c" ]
     command: >-
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic traffic.vehicles --partitions 3 --replication-factor 1 &&
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic traffic.snapshots --partitions 1 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic traffic.vehicles --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic traffic.snapshots --partitions 1 --replication-factor 1 &&
       echo '[Init] Topics created.'
     restart: "no"
 
@@ -67,6 +67,25 @@ services:
       interval: 10s
       timeout: 10s
       retries: 5
+
+  # ── Spark Structured Streaming ────────────────────────────────────────────
+  spark-processor:
+    build:
+      context: .
+      dockerfile: spark_layer/Dockerfile
+    container_name: spark_streaming
+    network_mode: "service:kafka"
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+      INFLUXDB_URL: http://influxdb:8086
+    depends_on:
+      kafka:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    restart: unless-stopped
 
   # ── Grafana ───────────────────────────────────────────────────────────────
   grafana:

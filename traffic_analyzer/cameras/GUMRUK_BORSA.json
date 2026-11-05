@@ -33,7 +33,14 @@
                 175,
                 430
             ],
-            "expected_direction": "top_to_bottom"
+            "expected_direction": "top_to_bottom",
+            "display_name": "Right_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 0
         }
-    }
+    },
+    "version": 2,
+    "source_id": "GUMRUK_BORSA",
+    "display_name": "GÜMRÜK BORSA"
 }

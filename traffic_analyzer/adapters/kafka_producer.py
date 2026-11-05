@@ -30,8 +30,9 @@ class TrafficProducer(IEventPublisher):
         analyzer  = Analyzer(video_loop, frame_processor, publisher)
     """
 
-    def __init__(self):
-        self._producer = self._connect()
+    def __init__(self, bootstrap_servers: str = BOOTSTRAP_SERVERS):
+        self._bootstrap_servers = bootstrap_servers or BOOTSTRAP_SERVERS
+        self._producer = self._connect(self._bootstrap_servers)
 
     # ── IEventPublisher ───────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ class TrafficProducer(IEventPublisher):
         return json.dumps(event, ensure_ascii=False, default=str)
 
     @staticmethod
-    def _connect():
+    def _connect(bootstrap_servers: str = BOOTSTRAP_SERVERS):
         """
         Try to connect to Kafka.  Returns None on failure so the caller
         receives console-only fallback automatically without crashing.
@@ -98,7 +99,7 @@ class TrafficProducer(IEventPublisher):
             from kafka.errors import NoBrokersAvailable
             try:
                 producer = KafkaProducer(
-                    bootstrap_servers=BOOTSTRAP_SERVERS,
+                    bootstrap_servers=bootstrap_servers,
                     acks=1,
                     compression_type='lz4',
                     linger_ms=10,
@@ -107,10 +108,10 @@ class TrafficProducer(IEventPublisher):
                     buffer_memory=67108864,
                     max_block_ms=2000,
                 )
-                print(f"[Kafka] Connected -> {BOOTSTRAP_SERVERS}")
+                print(f"[Kafka] Connected -> {bootstrap_servers}")
                 return producer
             except NoBrokersAvailable:
-                print(f"[Kafka] No broker at {BOOTSTRAP_SERVERS} "
+                print(f"[Kafka] No broker at {bootstrap_servers} "
                       f"— running in console-only mode.")
                 return None
             except Exception as e:

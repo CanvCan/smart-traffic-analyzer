@@ -2,73 +2,58 @@
 application/event_builder.py
 
 Assembles structured domain events from per-frame vehicle tracking data.
-
-Produced event types:
-  vehicle_detected  — emitted for every confirmed active track each frame
-  traffic_snapshot  — emitted every SNAPSHOT_EVERY frames as a scene summary
-
-Design notes:
-  - Vehicle labels and heavy-vehicle classification are resolved through
-    VehicleClass (domain layer), keeping the domain as the single source of truth.
-  - AnomalyType inherits from str, so event dicts serialise correctly with
-    json.dumps without any custom encoder.
-  - Tracks below MIN_FRAMES_BEFORE_EVENT or with no lane assignment are
-    suppressed to avoid noise from partially-entered bounding boxes.
-  - vm.update() is called inside update() before building vehicle events,
-    so all kinematic state is current for the current frame.
+All internal identifiers (camera_id, lane) are normalized to strict ASCII.
 """
 
 import time
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from traffic_analyzer.domain.text import slugify_ascii
 from traffic_analyzer.services.vehicle_metrics import VehicleMetrics
 from traffic_analyzer.services.scene_metrics import TrafficMetrics, SNAPSHOT_EVERY
 from traffic_analyzer.services.anomaly_detector import AnomalyDetector
-from traffic_analyzer.infrastructure.config_loader import AppConfig
-from traffic_analyzer.domain.models import VehicleClass, AnomalyType
+from traffic_analyzer.domain.models import AppConfig, VehicleClass, AnomalyType
 
-# Minimum frames a track must be observed before a vehicle_detected event is
-# emitted.  Guards against:
-#   - Partially-entered bounding boxes (bbox clips the frame edge on entry)
-#   - ByteTrack's minimum_consecutive_frames warm-up period
-#   - Lane assignment returning None while centroid is still outside polygons
-# Must be > tracker's minimum_consecutive_frames (default=3) so the track is
-# confirmed and its centroid is stable before anything is sent to Kafka.
 MIN_FRAMES_BEFORE_EVENT = 5
 
 
 class EventBuilder:
-    """
-    Owns a VehicleMetrics instance and produces JSON-serialisable event
-    dicts once per frame.
-
-    Usage (inside FrameProcessor.process):
-        events = self._event_builder.update(frame_id, frame_h, active_tracks)
-        for e in events:
-            publisher.send(e)
-    """
+    """Owns a VehicleMetrics instance and produces JSON-serialisable event dicts once per frame."""
 
     def __init__(self, config: AppConfig):
         self._cfg = config
-        self._vm = VehicleMetrics()
+        self._camera_id = slugify_ascii(config.camera.source_id)
+        kin = config.kinematics
+        anom = config.anomaly
+        scene = config.scene_thresholds
+
+        self._min_frames_in_roi = max(1, int(kin.min_frames_before_event))
+        self._snapshot_every = max(5, int(scene.snapshot_every))
+        self._vm = VehicleMetrics(
+            speed_tau_sec=float(kin.ema_tau),
+            position_history=int(kin.position_history),
+            direction_window=int(kin.direction_window),
+            class_vote_window=int(kin.class_vote_window),
+            stop_std_threshold=float(anom.stop_std_threshold),
+            stop_min_frames=int(anom.stop_min_frames),
+            stop_min_elapsed_sec=float(anom.stop_min_elapsed_sec),
+            slowdown_ratio=float(anom.slowdown_ratio),
+            slowdown_min_speed=float(anom.slowdown_min_speed),
+        )
+        self._scene_thresholds = scene
         self._roi_area = TrafficMetrics.roi_total_area(config.lanes)
         self._anomaly_detector = AnomalyDetector(self._vm)
         self._lane_expected_dir = {lane.name: lane.expected_direction
                                    for lane in config.lanes}
 
-    # ── MAIN ENTRY POINT ─────────────────────────────────────────────────────
-
-    def update(self, frame_id: int, frame_height: int,
-               active_tracks: List[Dict]) -> List[Dict]:
-        """
-        Call once per frame. Updates kinematic state then builds events.
-
-        active_tracks format:
-            [{"tid": int, "cls_id": int, "box": (x1, y1, x2, y2)}, ...]
-
-        Returns a list of event dicts (vehicle events + optional snapshot).
-        """
+    def update(
+        self,
+        frame_id: int,
+        frame_height: int,
+        active_tracks: List[Dict],
+        frame_timestamp: Optional[float] = None,
+    ) -> List[Dict]:
         events = []
         active_ids = set()
         valid_snapshot_tracks = []
@@ -77,34 +62,36 @@ class EventBuilder:
             tid    = track["tid"]
             cls_id = track["cls_id"]
             box    = track["box"]
+            conf   = float(track.get("confidence", 1.0))
             active_ids.add(tid)
 
-            # Update kinematic state for this frame before building any event.
-            self._vm.update(tid, box, frame_id, frame_height, cls_id)
+            self._vm.update(tid, box, frame_id, frame_height, cls_id, frame_timestamp=frame_timestamp)
 
-            vehicle_event = self._build_vehicle_event(tid, cls_id, box, frame_id)
+            vehicle_event = self._build_vehicle_event(tid, cls_id, box, frame_id, confidence=conf)
 
-            # Gate 1: bbox not yet stable (frame edge entry / tracker warm-up)
-            if vehicle_event["residence"]["frames_in_roi"] < MIN_FRAMES_BEFORE_EVENT:
+            if vehicle_event["residence"]["frames_in_roi"] < self._min_frames_in_roi:
                 continue
 
-            # Gate 2: centroid still outside all lane polygons
             if vehicle_event["vehicle"]["lane"] is None:
                 continue
 
             events.append(vehicle_event)
             valid_snapshot_tracks.append(track)
 
-        if frame_id % SNAPSHOT_EVERY == 0:
+        if frame_id % self._snapshot_every == 0:
             events.append(self._build_snapshot(frame_id, valid_snapshot_tracks))
 
         self._vm.cleanup(active_ids)
         return events
 
-    # ── VEHICLE EVENT ────────────────────────────────────────────────────────
-
-    def _build_vehicle_event(self, tid: int, cls_id: int,
-                             box: Tuple, frame_id: int) -> Dict:
+    def _build_vehicle_event(
+        self,
+        tid: int,
+        cls_id: int,
+        box: Tuple,
+        frame_id: int,
+        confidence: float = 1.0,
+    ) -> Dict:
         x1, y1, x2, y2 = box
         cx = (x1 + x2) / 2.0
         cy = (y1 + y2) / 2.0
@@ -120,20 +107,23 @@ class EventBuilder:
 
         expected_dir = self._lane_expected_dir.get(lane or "", "")
         anomaly      = self._anomaly_detector.detect(tid, direction, expected_dir)
+        conf_val     = round(float(confidence), 2)
 
         return {
             "event_type": "vehicle_detected",
             "timestamp":  round(time.time(), 3),
-            "camera_id":  self._cfg.camera.source_id,
+            "camera_id":  self._camera_id,
             "frame_id":   frame_id,
+            "confidence": conf_val,
 
             "vehicle": {
-                "id":       tid,
-                "class":    vehicle_cls.label,
-                "class_id": stable_cls_id,
-                "is_heavy": vehicle_cls.is_heavy,
-                "bbox":     list(box),
-                "lane":     lane,
+                "id":         tid,
+                "class":      vehicle_cls.label,
+                "class_id":   stable_cls_id,
+                "is_heavy":   vehicle_cls.is_heavy,
+                "bbox":       list(box),
+                "lane":       slugify_ascii(lane) if lane else None,
+                "confidence": conf_val,
             },
 
             "kinematics": {
@@ -147,20 +137,17 @@ class EventBuilder:
 
             "anomaly": {
                 "is_anomaly":   anomaly.is_anomaly,
-                # AnomalyType inherits from str: serialises as "stopped_vehicle" etc.
                 "type":         anomaly.type,
                 "stop_seconds": anomaly.stop_seconds,
             },
         }
-
-    # ── SNAPSHOT EVENT ───────────────────────────────────────────────────────
 
     def _build_snapshot(self, frame_id: int, active_tracks: List[Dict]) -> Dict:
         if not active_tracks:
             return {
                 "event_type": "traffic_snapshot",
                 "timestamp":  round(time.time(), 3),
-                "camera_id":  self._cfg.camera.source_id,
+                "camera_id":  self._camera_id,
                 "frame_id":   frame_id,
                 "counts": {
                     "total": 0, "bus": 0, "car": 0, "dolmus": 0,
@@ -169,12 +156,12 @@ class EventBuilder:
                 },
                 "speed":   {"average_px": 0.0, "min_px": 0.0, "max_px": 0.0},
                 "density": {"status": "FREE", "occupancy_ratio": 0.0},
-                "lane_counts": {lane.name: 0 for lane in self._cfg.lanes},
+                "lane_counts": {slugify_ascii(lane.name): 0 for lane in self._cfg.lanes},
                 "anomalies":   [],
             }
 
         class_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-        lane_counts  = {lane.name: 0 for lane in self._cfg.lanes}
+        lane_counts  = {slugify_ascii(lane.name): 0 for lane in self._cfg.lanes}
         boxes        = []
         speeds       = []
         anomalies    = []
@@ -198,8 +185,9 @@ class EventBuilder:
             speeds.append(spd)
 
             lane = TrafficMetrics.get_lane(cx, cy, self._cfg.lanes)
-            if lane and lane in lane_counts:
-                lane_counts[lane] += 1
+            lane_ascii = slugify_ascii(lane) if lane else None
+            if lane_ascii and lane_ascii in lane_counts:
+                lane_counts[lane_ascii] += 1
 
             direction    = self._vm.get_direction(tid)
             expected_dir = self._lane_expected_dir.get(lane or "", "")
@@ -210,7 +198,7 @@ class EventBuilder:
                     "vehicle_id": tid,
                     "class":      vehicle_cls.label,
                     "type":       anomaly.type,
-                    "lane":       lane,
+                    "lane":       lane_ascii,
                 }
                 if anomaly.type == AnomalyType.STOPPED_VEHICLE:
                     entry["stop_seconds"] = anomaly.stop_seconds
@@ -219,15 +207,15 @@ class EventBuilder:
                 anomalies.append(entry)
 
         total     = len(active_tracks)
-        heavy     = class_counts[0] + class_counts[5]  # bus + truck
+        heavy     = class_counts[0] + class_counts[5]
         avg_speed = float(np.mean(speeds)) if speeds else 0.0
         occupancy = TrafficMetrics.occupancy_ratio(boxes, self._roi_area)
-        status    = TrafficMetrics.traffic_status(avg_speed, total, occupancy)
+        status    = TrafficMetrics.traffic_status(avg_speed, total, occupancy, thresholds=self._scene_thresholds)
 
         return {
             "event_type": "traffic_snapshot",
             "timestamp":  round(time.time(), 3),
-            "camera_id":  self._cfg.camera.source_id,
+            "camera_id":  self._camera_id,
             "frame_id":   frame_id,
 
             "counts": {

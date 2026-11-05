@@ -1,17 +1,17 @@
-from abc import ABC, abstractmethod
 from typing import Any
 
+from traffic_analyzer.domain.ports import ITracker
 
-class BaseTracker(ABC):
+
+class BaseTracker(ITracker):
     """
     Strategy interface for multi-object trackers.
     Swap ByteTrack for BoTSORT or any other tracker
     by implementing this interface.
     """
 
-    @abstractmethod
-    def update(self, detections, frame) -> Any:
-        ...
+    def update(self, detections: Any, frame: Any = None) -> Any:
+        raise NotImplementedError
 
 
 class ByteTracker(BaseTracker):

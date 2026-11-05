@@ -41,7 +41,11 @@
                 423,
                 437
             ],
-            "expected_direction": "left_to_right"
+            "expected_direction": "left_to_right",
+            "display_name": "Right_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 0
         },
         "Middle_Lane": {
             "roi": [
@@ -88,7 +92,11 @@
                 216,
                 269
             ],
-            "expected_direction": "bottom_to_top"
+            "expected_direction": "bottom_to_top",
+            "display_name": "Middle_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 1
         },
         "Left_Lane": {
             "roi": [
@@ -127,7 +135,14 @@
                 19,
                 162
             ],
-            "expected_direction": "right_to_left"
+            "expected_direction": "right_to_left",
+            "display_name": "Left_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 2
         }
-    }
+    },
+    "version": 2,
+    "source_id": "BORNOVA_HUKUMET_KONAGI",
+    "display_name": "BORNOVA HÜKÜMET KONAĞI"
 }

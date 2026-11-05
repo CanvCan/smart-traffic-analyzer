@@ -37,7 +37,11 @@
                 22,
                 409
             ],
-            "expected_direction": "left_to_right"
+            "expected_direction": "left_to_right",
+            "display_name": "Middle_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 0
         },
         "Left_Lane": {
             "roi": [
@@ -72,7 +76,14 @@
                 162,
                 145
             ],
-            "expected_direction": "bottom_to_top"
+            "expected_direction": "bottom_to_top",
+            "display_name": "Left_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 1
         }
-    }
+    },
+    "version": 2,
+    "source_id": "PEHLIVANOGLU_KAVSAGI",
+    "display_name": "PEHLIVANOGLU KAVSAGI"
 }

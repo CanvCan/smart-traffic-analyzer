@@ -1,165 +1,81 @@
 {
-  "influx_settings": {
-    "url": "http://localhost:8086",
-    "token": "",
-    "org": "myorg",
-    "bucket": "traffic_metrics"
-  },
-  "camera_settings": {
-    "source_id": "IZM-HIGHWAY-01",
-    "video_path": "test_video4.mp4",
-    "display_width": 960
-  },
-  "model_settings": {
-    "model_path": "best.pt",
-    "threshold": 0.30,
-    "resolution": 880
-  },
-  "lanes": {
-    "Right_Lane": {
-      "expected_direction": "top_to_bottom",
-      "roi": [
-        1117,
-        296,
-        1914,
-        1029
-      ],
-      "points": [
-        [
-          1117,
-          296
-        ],
-        [
-          1262,
-          296
-        ],
-        [
-          1416,
-          435
-        ],
-        [
-          1914,
-          831
-        ],
-        [
-          1911,
-          1029
-        ],
-        [
-          1286,
-          1029
-        ],
-        [
-          1119,
-          297
-        ]
-      ],
-      "label_pt": [
-        1293,
-        1004
-      ]
+    "services_settings": {
+        "kafka_broker": "localhost:9092",
+        "influxdb_url": "http://localhost:8086",
+        "grafana_url": "http://localhost:3000",
+        "spark_container_name": "spark_streaming"
     },
-    "Middle_Lane": {
-      "expected_direction": "bottom_to_top",
-      "roi": [
-        27,
-        299,
-        1138,
-        1011
-      ],
-      "points": [
-        [
-          918,
-          299
-        ],
-        [
-          1077,
-          301
-        ],
-        [
-          1032,
-          467
-        ],
-        [
-          1116,
-          621
-        ],
-        [
-          1138,
-          1011
-        ],
-        [
-          27,
-          1005
-        ],
-        [
-          759,
-          442
-        ],
-        [
-          920,
-          299
-        ]
-      ],
-      "label_pt": [
-        969,
-        994
-      ]
+    "influx_settings": {
+        "url": "http://localhost:8086",
+        "token": "",
+        "org": "myorg",
+        "bucket": "traffic_metrics"
     },
-    "Left_Lane": {
-      "expected_direction": "bottom_to_top",
-      "roi": [
-        4,
-        339,
-        759,
-        1007
-      ],
-      "points": [
-        [
-          384,
-          387
-        ],
-        [
-          467,
-          339
-        ],
-        [
-          654,
-          361
-        ],
-        [
-          747,
-          384
-        ],
-        [
-          759,
-          435
-        ],
-        [
-          10,
-          1007
-        ],
-        [
-          4,
-          675
-        ],
-        [
-          394,
-          474
-        ],
-        [
-          442,
-          422
-        ],
-        [
-          384,
-          386
-        ]
-      ],
-      "label_pt": [
-        23,
-        965
-      ]
-    }
-  }
+    "kafka_settings": {
+        "bootstrap_servers": "localhost:9092"
+    },
+    "camera_settings": {
+        "source_id": "local_test_video4",
+        "video_path": "C:\\Users\\golot\\PycharmProjects\\GraduationProject\\traffic_analyzer\\test_video4.mp4",
+        "display_width": 960
+    },
+    "model_settings": {
+        "model_path": "best.pt",
+        "threshold": 0.3,
+        "resolution": 880,
+        "batch_size": 1,
+        "device": "cuda"
+    },
+    "tracking_settings": {
+        "lost_track_buffer": 150,
+        "min_matching_threshold": 0.8,
+        "min_consecutive_frames": 3,
+        "ghost_frames": 30
+    },
+    "kinematics_settings": {
+        "ema_tau": 0.35,
+        "position_history": 45,
+        "direction_window": 10,
+        "class_vote_window": 20,
+        "min_frames_before_event": 5
+    },
+    "anomaly_settings": {
+        "stop_std_threshold": 3.0,
+        "stop_min_frames": 30,
+        "stop_min_elapsed_sec": 1.0,
+        "slowdown_ratio": 0.5,
+        "slowdown_min_speed": 30.0
+    },
+    "scene_thresholds": {
+        "speed_free": 65.0,
+        "speed_flow": 40.0,
+        "speed_heavy": 25.0,
+        "speed_jammed": 15.0,
+        "occ_free": 0.2,
+        "occ_flow": 0.35,
+        "occ_heavy": 0.55,
+        "occ_jammed": 0.75,
+        "snapshot_every": 48
+    },
+    "presets": {
+        "Fast": {
+            "built_in": true,
+            "resolution": 640,
+            "threshold": 0.35,
+            "display_width": 840
+        },
+        "Balanced": {
+            "built_in": true,
+            "resolution": 880,
+            "threshold": 0.3,
+            "display_width": 960
+        },
+        "Detailed": {
+            "built_in": true,
+            "resolution": 1120,
+            "threshold": 0.25,
+            "display_width": 1280
+        }
+    },
+    "lanes": {}
 }

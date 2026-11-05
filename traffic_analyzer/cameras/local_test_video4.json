@@ -41,7 +41,11 @@
             "label_pt": [
                 1293,
                 1004
-            ]
+            ],
+            "display_name": "Right_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 0
         },
         "Middle_Lane": {
             "expected_direction": "bottom_to_top",
@@ -88,7 +92,11 @@
             "label_pt": [
                 969,
                 994
-            ]
+            ],
+            "display_name": "Middle_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 1
         },
         "Left_Lane": {
             "expected_direction": "bottom_to_top",
@@ -143,7 +151,14 @@
             "label_pt": [
                 23,
                 965
-            ]
+            ],
+            "display_name": "Left_Lane",
+            "visible": true,
+            "locked": false,
+            "order": 2
         }
-    }
+    },
+    "version": 2,
+    "source_id": "local_test_video4",
+    "display_name": "test_video4.mp4"
 }

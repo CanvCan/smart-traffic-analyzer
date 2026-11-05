@@ -1,19 +1,24 @@
-from abc import ABC, abstractmethod
 from typing import Any
 import warnings
+
+from traffic_analyzer.domain.ports import IDetector
 
 warnings.filterwarnings("ignore")
 
 
-class BaseDetector(ABC):
+def align_resolution_block40(resolution: int) -> int:
+    """Snap resolution to the nearest positive multiple of 40 (patch_size=20 * num_windows=2)."""
+    return max(40, int(round(int(resolution) / 40) * 40))
+
+
+class BaseDetector(IDetector):
     """
     Strategy interface for object detectors.
     Swap RF-DETR for any other model by implementing this interface.
     """
 
-    @abstractmethod
-    def detect(self, frame) -> Any:
-        ...
+    def detect(self, frame: Any) -> Any:
+        raise NotImplementedError
 
 
 class RFDETRDetector(BaseDetector):
@@ -21,7 +26,8 @@ class RFDETRDetector(BaseDetector):
 
     Loads best.pt (RF-DETR XXLarge, dinov2_windowed_base backbone, 6 custom
     Turkish traffic classes: bus/car/dolmus/motorcycle/taxi/truck).
-    Returns sv.Detections directly — no post-conversion needed.
+    Includes Block-40 resolution alignment, PyTorch AMP (FP16) on CUDA,
+    optimize_for_inference(), and startup CUDA warmup.
     """
 
     # Architecture params match the best.pt checkpoint exactly.
@@ -42,33 +48,72 @@ class RFDETRDetector(BaseDetector):
     )
 
     def __init__(self, model_path: str, device: str,
-                 threshold: float, resolution: int):
+                 threshold: float, resolution: int, batch_size: int = 1):
+        import numpy as np
+        import torch
         from rfdetr import RFDETRBase
+        if device == "auto" or (device == "cuda" and not torch.cuda.is_available()):
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        aligned_res = max(40, int(round(int(resolution) / 40) * 40))
+        self._device = device
+        self._use_amp = (device == "cuda" and torch.cuda.is_available())
         self._threshold = threshold
+        self._resolution = aligned_res
+        self._batch_size = max(1, int(batch_size))
         self._model = RFDETRBase(
             **self._ARCH,
-            resolution       = resolution,
+            resolution       = aligned_res,
             pretrain_weights = model_path,
             device           = device,
         )
-        print(f"[Detector] RF-DETR {model_path} on {device.upper()} | resolution={resolution}")
+        if hasattr(self._model, "optimize_for_inference"):
+            try:
+                self._model.optimize_for_inference()
+            except Exception:
+                pass
+        try:
+            dummy = np.zeros((aligned_res, aligned_res, 3), dtype=np.uint8)
+            if self._use_amp:
+                with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
+                    self._model.predict(dummy, threshold=self._threshold)
+            else:
+                with torch.inference_mode():
+                    self._model.predict(dummy, threshold=self._threshold)
+        except Exception:
+            pass
+        print(
+            f"[Detector] RF-DETR {model_path} on {device.upper()} | "
+            f"resolution={aligned_res} | AMP={self._use_amp}"
+        )
 
     def detect(self, frame):
         import numpy as np
-        # OpenCV frame is BGR; RF-DETR expects RGB.
-        # .copy() ensures contiguous memory ([::-1] produces negative-stride view
-        # which torchvision's to_tensor rejects).
+        import torch
         rgb = frame[:, :, ::-1].copy()
-        det = self._model.predict(rgb, threshold=self._threshold)
+        if self._use_amp:
+            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
+                det = self._model.predict(rgb, threshold=self._threshold)
+        else:
+            with torch.inference_mode():
+                det = self._model.predict(rgb, threshold=self._threshold)
 
-        # RF-DETR model uses 1-based label indices (0=background, 1=bus, 2=car …).
-        # Subtract 1 to get 0-based IDs that match our VehicleClass enum.
-        # Invalid IDs (<=0 after subtraction) map to -1 (UNKNOWN).
         if len(det) > 0:
-            corrected = det.class_id.astype(np.int64) - 1
-            corrected[corrected < 0] = -1
-            det.class_id = corrected
+            det.class_id = det.class_id.astype(np.int64) - 1
+            det.class_id[det.class_id < 0] = -1
         return det
+
+    def close(self) -> None:
+        """Release model weights and clear CUDA cache."""
+        self._model = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        self.close()
 
     @property
     def class_names(self) -> dict:

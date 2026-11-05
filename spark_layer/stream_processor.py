@@ -42,7 +42,7 @@ from pyspark.sql.functions import (
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
-BOOTSTRAP_SERVERS = 'localhost:9092'
+BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
 TOPIC_VEHICLES = 'traffic.vehicles'
 TOPIC_SNAPSHOTS = 'traffic.snapshots'
 CHECKPOINT_BASE = os.path.join(tempfile.gettempdir(), 'traffic-checkpoint')

@@ -3,14 +3,14 @@ visualization/_pil_utils.py
 
 Shared PIL font-loading and text-drawing helpers used by both the live
 frame Renderer and the ROI canvas ROIRenderer.
-
-Keeping these in one place prevents duplicate font caches and makes it
-easy to add new system font fallbacks in a single edit.
+Supports Windows and Linux Unicode TrueType fonts for Turkish glyphs.
 """
 from __future__ import annotations
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+from traffic_analyzer.domain.text import normalize_search_key, slugify_ascii
 
 _FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
 
@@ -18,14 +18,13 @@ _FONT_PATHS = [
     "C:/Windows/Fonts/segoeui.ttf",
     "C:/Windows/Fonts/segoeuil.ttf",
     "C:/Windows/Fonts/arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ]
 
 
 def pil_font(size: int) -> ImageFont.FreeTypeFont:
-    """Return a cached PIL TrueType font at *size* points.
-
-    Falls back to the PIL built-in bitmap font if no system font is found.
-    """
+    """Return a cached PIL TrueType font at *size* points."""
     if size not in _FONT_CACHE:
         for path in _FONT_PATHS:
             try:
