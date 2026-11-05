@@ -175,6 +175,188 @@ class TestLauncherAndROI(unittest.TestCase):
         self.assertIn("[ANOMALY] ID: #42 | Type: WRONG_WAY", formatted[1][0])
         self.assertEqual(formatted[1][1], "ANOMALY")
 
+    def test_logs_tab_freeze_and_settings_reset_to_defaults(self) -> None:
+        """LogsTab freeze state suppresses queue inserts and SettingsTab reset restores AppConfig factory defaults."""
+        from launcher.tabs.logs_tab import LogsTab
+        from launcher.tabs.settings_tab import SettingsTab
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            logs = LogsTab(root)
+            self.assertIsInstance(logs.paned_window, tk.PanedWindow)
+            self.assertEqual(logs.paned_window.cget("sashwidth"), 6)
+            self.assertEqual(logs.paned_window.cget("sashcursor"), "sb_h_double_arrow")
+
+            self.assertFalse(logs.is_stream_paused)
+            logs.toggle_stream_pause()
+            self.assertTrue(logs.is_stream_paused)
+            self.assertEqual(logs._pause_btn.cget("text"), "▶ Resume")
+
+            logs.push_telemetry_event({"event_type": "vehicle_detected", "vehicle": {"id": 1, "class": "Bus"}})
+            logs._drain_telemetry_events()
+            # Since stream is paused, the event is not added to textbox
+            content = logs._kafka_log_box.get("1.0", "end")
+            self.assertNotIn("Bus", content)
+
+            logs.toggle_stream_pause()
+            self.assertFalse(logs.is_stream_paused)
+            self.assertEqual(logs._pause_btn.cget("text"), "⏸ Pause")
+
+            logs.clear_kafka_console()
+            self.assertEqual(logs._kafka_log_box.get("1.0", "end").strip(), "")
+
+            # Spark console pause and clear
+            self.assertFalse(logs.is_spark_paused)
+            logs.toggle_spark_pause()
+            self.assertTrue(logs.is_spark_paused)
+            self.assertEqual(logs._spark_pause_btn.cget("text"), "▶ Resume")
+            logs.toggle_spark_pause()
+            self.assertFalse(logs.is_spark_paused)
+            self.assertEqual(logs._spark_pause_btn.cget("text"), "⏸ Pause")
+
+            logs.clear_spark_console()
+            logs.stop_streamers()
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                cfg_path = Path(tmp_dir) / "config.json"
+                custom_cfg = AppConfig(
+                    camera=CameraConfig(display_width=1280),
+                    model=ModelConfig(resolution=640, threshold=0.6),
+                )
+                custom_cfg.tracking.lost_track_buffer = 999
+                save_config(custom_cfg, cfg_path)
+
+                settings = SettingsTab(
+                    root,
+                    project_root=Path(tmp_dir),
+                    config_path=cfg_path,
+                    on_status_message=lambda _msg, _col: None,
+                )
+                self.assertEqual(settings._field_vars["tracking.lost_track_buffer"].get(), "999")
+                self.assertEqual(settings._field_vars["model.batch_size"].get(), "1")
+
+                settings.reset_to_defaults()
+                # Factory default for lost_track_buffer is 150, resolution is 880
+                self.assertEqual(settings._field_vars["tracking.lost_track_buffer"].get(), "150")
+                self.assertEqual(settings._custom_res_var.get(), "880")
+                self.assertEqual(settings._res_choice_var.get(), "880 (Recommended)")
+
+                # Save and reload from disk
+                saved_ok = settings.save_settings_to_disk(quiet=True)
+                self.assertTrue(saved_ok)
+                reloaded = load_config(str(cfg_path))
+                self.assertEqual(reloaded.tracking.lost_track_buffer, 150)
+                self.assertEqual(reloaded.model.resolution, 880)
+        finally:
+            root.destroy()
+
+    def test_roi_selector_canvas_image_lifecycle_and_toplevel(self) -> None:
+        """ROISelectorWindow uses parent master, retains canvas.image reference, and updates itemconfig."""
+        import tkinter as tk
+        import numpy as np
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                cfg_path = Path(tmp_dir) / "config.json"
+                save_config(AppConfig(camera=CameraConfig(), model=ModelConfig()), cfg_path)
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+                editor = ROISelectorWindow(
+                    parent=root,
+                    frame=frame,
+                    config_path=str(cfg_path),
+                    source_id="test_cam",
+                    cameras_dir=Path(tmp_dir),
+                )
+                self.assertFalse(editor._owns_root)
+                self.assertIsNone(editor._hidden_root)
+
+                # Ensure canvas has dimensions and render
+                editor._canvas.configure(width=640, height=480)
+                editor._canvas.update()
+                editor._render_canvas()
+
+                # Verify PhotoImage master and GC reference
+                self.assertIsNotNone(editor._photo)
+                self.assertIsNotNone(editor._canvas.image)
+                self.assertEqual(editor._photo, editor._canvas.image)
+                first_img_id = editor._image_id
+                self.assertIsNotNone(first_img_id)
+
+                # Simulate mouse movement and re-render
+                fake_event = tk.Event()
+                fake_event.x = 200
+                fake_event.y = 150
+                editor._on_mouse_move(fake_event)
+
+                # _image_id should remain the exact same item on canvas (updated in place via itemconfig)
+                self.assertEqual(editor._image_id, first_img_id)
+                self.assertIsNotNone(editor._canvas.image)
+
+                editor.destroy()
+        finally:
+            root.destroy()
+
+    def test_roi_selector_timeline_slider_and_frame_seeking(self) -> None:
+        """ROISelectorWindow initializes timeline slider for video, skips intro, and seeks without dropping lanes."""
+        import tkinter as tk
+
+        test_vid = Path("traffic_analyzer/test_video.mp4")
+        if not test_vid.exists():
+            return
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                cfg_path = Path(tmp_dir) / "config.json"
+                save_config(AppConfig(camera=CameraConfig(), model=ModelConfig()), cfg_path)
+
+                editor = ROISelectorWindow(
+                    parent=root,
+                    config_path=str(cfg_path),
+                    source_id="test_vid_cam",
+                    cameras_dir=Path(tmp_dir),
+                    video_path=str(test_vid),
+                )
+                self.assertIsNotNone(editor._cap)
+                self.assertGreater(editor._total_frames, 100)
+                # Intro skip: default frame should be ~3s * fps
+                expected_start = int(editor._fps * 3)
+                self.assertEqual(editor._current_frame_idx, expected_start)
+
+                # Timeline UI presence
+                self.assertTrue(hasattr(editor, "_timeline_slider"))
+                self.assertEqual(editor._timeline_slider.get(), expected_start)
+                self.assertIn("Time:", editor._timeline_time_lbl.cget("text"))
+
+                # Add a dummy lane to verify it is NOT dropped on seek
+                editor._lanes.append({
+                    "name": "Lane 1",
+                    "points": [[100, 100], [200, 100], [200, 200], [100, 200]],
+                    "expected_direction": "DOWN",
+                })
+
+                # Seek forward to frame 300
+                editor._seek_frame(300)
+                self.assertEqual(editor._current_frame_idx, 300)
+                self.assertEqual(len(editor._lanes), 1)
+                self.assertEqual(editor._lanes[0]["name"], "Lane 1")
+
+                # Relative seek by +1 second
+                prev_idx = editor._current_frame_idx
+                editor._seek_relative(int(editor._fps * 1))
+                self.assertEqual(editor._current_frame_idx, prev_idx + int(editor._fps * 1))
+
+                editor._close_window()
+                self.assertIsNone(editor._cap)
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

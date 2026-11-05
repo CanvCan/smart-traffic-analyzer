@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import messagebox
 import cv2
 import numpy as np
+from PIL import Image, ImageTk
 import customtkinter as ctk
 
 from traffic_analyzer.domain.theme import (
@@ -69,18 +70,34 @@ def _bgr_to_hex(bgr: Tuple[int, int, int]) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def _format_time(frame_idx: int, fps: float, total_frames: int) -> str:
+    fps_val = fps if fps > 0 else 30.0
+    cur_sec = int(frame_idx / fps_val)
+    tot_sec = int(total_frames / fps_val) if total_frames > 0 else 0
+    cur_m, cur_s = divmod(cur_sec, 60)
+    tot_m, tot_s = divmod(tot_sec, 60)
+    return f"Time: {cur_m:02d}:{cur_s:02d} / {tot_m:02d}:{tot_s:02d}"
+
+
 class ROISelectorWindow(ctk.CTkToplevel):
-    """Interactive polygon ROI editor with in-place lane editing and dirty-state protection."""
+    """Interactive polygon ROI editor with in-place lane editing, timeline scrubbing, and dirty-state protection."""
 
     def __init__(
         self,
-        parent: Optional[tk.Misc],
-        frame: np.ndarray,
+        parent: Optional[tk.Misc] = None,
+        frame: Optional[np.ndarray] = None,
         config_path: str = "config.json",
         source_id: str = "default",
         cameras_dir: Optional[os.PathLike] = None,
+        master: Optional[tk.Misc] = None,
+        video_path: Optional[str] = None,
+        cap: Optional[cv2.VideoCapture] = None,
     ) -> None:
-        self._owns_root = parent is None
+        actual_master = master if master is not None else parent
+        if actual_master is None:
+            actual_master = getattr(tk, "_default_root", None)
+
+        self._owns_root = actual_master is None
         if self._owns_root:
             ctk.set_appearance_mode("Dark")
             self._hidden_root = ctk.CTk()
@@ -88,18 +105,51 @@ class ROISelectorWindow(ctk.CTkToplevel):
             super().__init__(self._hidden_root)
         else:
             self._hidden_root = None
-            super().__init__(parent)
+            super().__init__(actual_master)
 
         self.title(f"Smart Traffic Analyzer — Interactive ROI Editor [{source_id}]")
         self.geometry("1360x820")
         self.minsize(1024, 660)
         self.configure(fg_color=_BG)
 
-        if parent is not None:
-            self.transient(parent)
+        if actual_master is not None:
+            top_parent = actual_master.winfo_toplevel() if hasattr(actual_master, "winfo_toplevel") else actual_master
+            self.transient(top_parent)
         self.grab_set()
         self.focus_force()
 
+        # Video capture & metadata initialization
+        self._video_path = video_path
+        self._cap = cap
+        if self._cap is None and self._video_path and os.path.exists(self._video_path):
+            try:
+                self._cap = cv2.VideoCapture(self._video_path)
+            except Exception as exc:
+                logger.warning("Could not open video file %s: %s", self._video_path, exc)
+                self._cap = None
+
+        self._total_frames: int = 0
+        self._fps: float = 30.0
+        self._current_frame_idx: int = 0
+
+        if self._cap is not None and self._cap.isOpened():
+            self._total_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            fps_val = self._cap.get(cv2.CAP_PROP_FPS) or 0.0
+            self._fps = float(fps_val) if fps_val > 0 else 30.0
+            # Default to 3rd second to skip intros / black screens
+            self._current_frame_idx = (
+                min(int(self._fps * 3), max(0, self._total_frames - 1))
+                if self._total_frames > int(self._fps * 3)
+                else 0
+            )
+            if frame is None:
+                self._cap.set(cv2.CAP_PROP_POS_FRAMES, self._current_frame_idx)
+                ret, f = self._cap.read()
+                if ret and f is not None:
+                    frame = f
+
+        if frame is None:
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         self._base_frame: np.ndarray = frame.copy()
         self._frame_h, self._frame_w = self._base_frame.shape[:2]
         self._renderer = ROIRenderer(self._frame_w, self._frame_h)
@@ -122,7 +172,8 @@ class ROISelectorWindow(ctk.CTkToplevel):
         self._updating_ui_from_selection: bool = False
         self.is_dirty: bool = False
         self._saved: bool = False
-        self._photo = None
+        self._photo: Optional[ImageTk.PhotoImage] = None
+        self._image_id: Optional[int] = None
 
         self._load_existing_lanes()
         self._initial_lanes = copy.deepcopy(self._lanes)
@@ -422,9 +473,102 @@ class ROISelectorWindow(ctk.CTkToplevel):
             text_color=_TEXT_SEC,
         ).pack(anchor="w", padx=12, pady=8)
 
-        # Section 5: Bottom Action Buttons (Save & Close + Cancel / Exit)
+        # Section 5: Video Timeline & Reference Frame Selector (Active if video file with >1 frames)
+        if self._total_frames > 1:
+            self._timeline_frame = ctk.CTkFrame(
+                sidebar,
+                fg_color=_CARD,
+                corner_radius=10,
+                border_width=1,
+                border_color=_BORDER,
+            )
+            self._timeline_frame.grid(row=5, column=0, sticky="ew", padx=14, pady=(0, 8))
+            self._timeline_frame.grid_columnconfigure(0, weight=1)
+
+            tl_hdr = ctk.CTkFrame(self._timeline_frame, fg_color="transparent")
+            tl_hdr.pack(fill="x", padx=12, pady=(8, 2))
+
+            ctk.CTkLabel(
+                tl_hdr,
+                text="TIMELINE",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=_TEXT_SEC,
+            ).pack(side="left")
+
+            self._timeline_time_lbl = ctk.CTkLabel(
+                tl_hdr,
+                text=_format_time(self._current_frame_idx, self._fps, self._total_frames),
+                font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+                text_color=_AMBER,
+            )
+            self._timeline_time_lbl.pack(side="right")
+
+            self._timeline_slider = ctk.CTkSlider(
+                self._timeline_frame,
+                from_=0,
+                to=max(1, self._total_frames - 1),
+                height=16,
+                fg_color=_SURFACE,
+                progress_color=_ACCENT,
+                button_color=_AMBER,
+                button_hover_color=_ACCENT_HOVER,
+                command=self._on_timeline_slider_drag,
+            )
+            self._timeline_slider.set(self._current_frame_idx)
+            self._timeline_slider.pack(fill="x", padx=12, pady=(4, 6))
+            self._timeline_slider.bind("<ButtonRelease-1>", lambda _e: self._on_timeline_slider_release())
+
+            step_bar = ctk.CTkFrame(self._timeline_frame, fg_color="transparent")
+            step_bar.pack(fill="x", padx=12, pady=(0, 8))
+            step_bar.columnconfigure((0, 1, 2, 3), weight=1)
+
+            ctk.CTkButton(
+                step_bar,
+                text="-5s",
+                height=22,
+                fg_color=_SURFACE,
+                hover_color=_CARD_HOVER,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=_TEXT_SEC,
+                command=lambda: self._seek_relative(-int(self._fps * 5)),
+            ).grid(row=0, column=0, padx=2, sticky="ew")
+
+            ctk.CTkButton(
+                step_bar,
+                text="-1s",
+                height=22,
+                fg_color=_SURFACE,
+                hover_color=_CARD_HOVER,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=_TEXT_SEC,
+                command=lambda: self._seek_relative(-int(self._fps * 1)),
+            ).grid(row=0, column=1, padx=2, sticky="ew")
+
+            ctk.CTkButton(
+                step_bar,
+                text="+1s",
+                height=22,
+                fg_color=_SURFACE,
+                hover_color=_CARD_HOVER,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=_TEXT_SEC,
+                command=lambda: self._seek_relative(int(self._fps * 1)),
+            ).grid(row=0, column=2, padx=2, sticky="ew")
+
+            ctk.CTkButton(
+                step_bar,
+                text="+5s",
+                height=22,
+                fg_color=_SURFACE,
+                hover_color=_CARD_HOVER,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=_TEXT_SEC,
+                command=lambda: self._seek_relative(int(self._fps * 5)),
+            ).grid(row=0, column=3, padx=2, sticky="ew")
+
+        # Section 6: Bottom Action Buttons (Save & Close + Cancel / Exit)
         footer_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        footer_frame.grid(row=5, column=0, sticky="ew", padx=14, pady=(0, 14))
+        footer_frame.grid(row=6, column=0, sticky="ew", padx=14, pady=(0, 14))
         footer_frame.grid_columnconfigure(0, weight=1)
         footer_frame.grid_columnconfigure(1, weight=1)
 
@@ -462,7 +606,52 @@ class ROISelectorWindow(ctk.CTkToplevel):
         self.bind("<BackSpace>", lambda _e: self._on_backspace())
         self.bind("<Control-z>", lambda _e: self._undo_last_point())
         self.bind("<Control-s>", lambda _e: self._save_and_close())
+        self.bind("<Left>", lambda _e: self._on_arrow_seek(-1))
+        self.bind("<Right>", lambda _e: self._on_arrow_seek(1))
         self.protocol("WM_DELETE_WINDOW", self._on_close_request)
+
+    def _on_arrow_seek(self, direction: int) -> None:
+        if hasattr(self, "_name_entry") and self.focus_get() == self._name_entry._entry:
+            return
+        if self._total_frames > 1:
+            self._seek_relative(direction * max(1, int(self._fps)))
+
+    def _seek_frame(self, target_frame_index: int) -> None:
+        """Seek video capture to target_frame_index, read frame, and re-render without clearing lanes."""
+        if self._cap is None or not self._cap.isOpened() or self._total_frames <= 0:
+            return
+
+        target_idx = max(0, min(int(target_frame_index), self._total_frames - 1))
+        self._current_frame_idx = target_idx
+
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, target_idx)
+        ret, new_frame = self._cap.read()
+        if ret and new_frame is not None:
+            self._base_frame = new_frame
+            self._frame_h, self._frame_w = self._base_frame.shape[:2]
+            self._render_canvas()
+
+        self._update_timeline_label(target_idx)
+        if hasattr(self, "_timeline_slider"):
+            if abs(self._timeline_slider.get() - target_idx) > 0.5:
+                self._timeline_slider.set(target_idx)
+
+    def _seek_relative(self, delta_frames: int) -> None:
+        self._seek_frame(self._current_frame_idx + delta_frames)
+
+    def _on_timeline_slider_drag(self, val: float) -> None:
+        target_idx = int(round(val))
+        self._seek_frame(target_idx)
+
+    def _on_timeline_slider_release(self) -> None:
+        if hasattr(self, "_timeline_slider"):
+            target_idx = int(round(self._timeline_slider.get()))
+            self._seek_frame(target_idx)
+
+    def _update_timeline_label(self, frame_idx: int) -> None:
+        if hasattr(self, "_timeline_time_lbl") and self._timeline_time_lbl is not None:
+            time_str = _format_time(frame_idx, self._fps, self._total_frames)
+            self._timeline_time_lbl.configure(text=time_str)
 
     def _on_backspace(self) -> None:
         if self.focus_get() == self._name_entry._entry:
@@ -840,7 +1029,7 @@ class ROISelectorWindow(ctk.CTkToplevel):
         if canvas_w < 10 or canvas_h < 10:
             return
 
-        self._photo = self._renderer.render_photo(
+        pil_img = self._renderer.render_pil(
             base_frame=self._base_frame,
             canvas_w=canvas_w,
             canvas_h=canvas_h,
@@ -853,8 +1042,13 @@ class ROISelectorWindow(ctk.CTkToplevel):
             polygon_closed=self._polygon_closed,
             selected_lane_idx=self._selected_lane_idx,
         )
-        self._canvas.delete("all")
-        self._canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        self._photo = ImageTk.PhotoImage(pil_img, master=self._canvas)
+        self._canvas.image = self._photo  # Prevent Python GC from garbage-collecting the PhotoImage
+
+        if self._image_id is None or not self._canvas.find_withtag(self._image_id):
+            self._image_id = self._canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        else:
+            self._canvas.itemconfig(self._image_id, image=self._photo)
 
     # ── Save & Dirty State Confirmation ───────────────────────────────────────
 
@@ -924,6 +1118,12 @@ class ROISelectorWindow(ctk.CTkToplevel):
             return
 
     def _close_window(self) -> None:
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
         self.grab_release()
         self.destroy()
         if self._owns_root and self._hidden_root is not None:
@@ -942,11 +1142,16 @@ class ROISelector:
         source_id: str = "default",
         parent: Optional[tk.Misc] = None,
         cameras_dir: Optional[os.PathLike] = None,
+        master: Optional[tk.Misc] = None,
+        video_path: Optional[str] = None,
+        cap: Optional[cv2.VideoCapture] = None,
     ) -> None:
         self.config_path = config_path
         self.source_id = source_id
-        self.parent = parent
+        self.parent = master if master is not None else parent
         self.cameras_dir = cameras_dir
+        self.video_path = video_path
+        self.cap = cap
 
     def select_rois(self, frame: np.ndarray) -> List[dict]:
         editor = ROISelectorWindow(
@@ -955,11 +1160,10 @@ class ROISelector:
             config_path=self.config_path,
             source_id=self.source_id,
             cameras_dir=self.cameras_dir,
+            video_path=self.video_path,
+            cap=self.cap,
         )
-        if editor._owns_root and editor._hidden_root is not None:
-            editor.wait_window()
-        else:
-            editor.wait_window()
+        editor.wait_window()
         return editor.get_lanes()
 
 
@@ -970,10 +1174,17 @@ def run(
     cameras_dir: Optional[os.PathLike] = None,
     video_path: Optional[str] = None,
     parent: Optional[tk.Misc] = None,
+    master: Optional[tk.Misc] = None,
 ) -> List[dict]:
-    """Capture a single reference frame from *stream_url* or *video_path* and open the ROI editor."""
+    """Capture a reference frame from *stream_url* or *video_path* and open the ROI editor."""
+    actual_parent = master if master is not None else parent
+    if actual_parent is None:
+        actual_parent = getattr(tk, "_default_root", None)
+
     frame: Optional[np.ndarray] = None
-    source = stream_url or video_path
+    source = video_path or stream_url
+    cap: Optional[cv2.VideoCapture] = None
+
     if source:
         if "mjpeg" in source.lower():
             from traffic_analyzer.infrastructure.video_loop import _iter_mjpeg
@@ -983,10 +1194,18 @@ def run(
         else:
             cap = cv2.VideoCapture(source)
             if cap.isOpened():
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                fps_val = cap.get(cv2.CAP_PROP_FPS) or 0.0
+                fps = float(fps_val) if fps_val > 0 else 30.0
+
+                # Skip intros: default to 3rd second if video duration allows
+                start_frame = min(int(fps * 3), max(0, total_frames - 1)) if total_frames > int(fps * 3) else 0
+                if start_frame > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
                 ret, f = cap.read()
                 if ret and f is not None:
                     frame = f
-            cap.release()
 
     if frame is None:
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -994,7 +1213,9 @@ def run(
     selector = ROISelector(
         config_path=str(config_path),
         source_id=camera_id,
-        parent=parent,
+        parent=actual_parent,
         cameras_dir=cameras_dir,
+        video_path=video_path,
+        cap=cap,
     )
     return selector.select_rois(frame)

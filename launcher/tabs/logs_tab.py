@@ -2,7 +2,8 @@
 launcher/tabs/logs_tab.py
 
 Live Kafka Telemetry Event stream (Producer via IPC Queue) and Spark Structured Streaming
-container log viewer (Consumer / Q1-Q11).
+container log viewer (Consumer / Q1-Q11) with resizable draggable PanedWindow splitter,
+freeze/pause stream controls, and independent clear buttons.
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ from launcher.theme import (
     FG_MED,
     FONT_FAMILY,
     GREEN,
+    GREEN_D,
     RED,
+    RED_D,
     SURFACE,
     YELLOW,
 )
@@ -127,9 +130,13 @@ class LogsTab(ctk.CTkFrame):
             service_name="spark-processor",
         )
         self._logs_autoscroll_var = tk.BooleanVar(value=True)
+        self.is_stream_paused: bool = False
+        self.is_spark_paused: bool = False
+        self._sash_initialized: bool = False
 
         self._build_ui()
         self._spark_streamer.start()
+        self.after(100, self._set_initial_sash)
 
     def set_event_queue(self, event_queue: Any) -> None:
         self._event_queue = event_queue
@@ -155,21 +162,6 @@ class LogsTab(ctk.CTkFrame):
             text_color=FG,
         ).pack(side="left")
 
-        ctk.CTkButton(
-            top_bar,
-            text="Clear Consoles",
-            width=118,
-            height=30,
-            corner_radius=6,
-            fg_color=CARD,
-            hover_color=CARD_HI,
-            border_width=1,
-            border_color=BORDER,
-            text_color=FG,
-            font=F_SMALL,
-            command=self.clear_consoles,
-        ).pack(side="right")
-
         ctk.CTkCheckBox(
             top_bar,
             text="Auto-scroll",
@@ -180,25 +172,71 @@ class LogsTab(ctk.CTkFrame):
             hover_color=ACCENT_H,
             checkbox_width=18,
             checkbox_height=18,
-        ).pack(side="right", padx=(0, 16))
+        ).pack(side="right")
 
-        panes = ctk.CTkFrame(self, fg_color="transparent")
-        panes.pack(fill="both", expand=True, padx=28, pady=(0, 18))
-        panes.columnconfigure(0, weight=1)
-        panes.columnconfigure(1, weight=1)
-        panes.rowconfigure(0, weight=1)
+        # Container for horizontal resizable PanedWindow splitter
+        self.consoles_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.consoles_container.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        left_card = ctk.CTkFrame(panes, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
-        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.paned_window = tk.PanedWindow(
+            self.consoles_container,
+            orient=tk.HORIZONTAL,
+            bg=BG,
+            bd=0,
+            sashwidth=6,
+            sashrelief="flat",
+            sashcursor="sb_h_double_arrow",
+            opaqueresize=True,
+        )
+        self.paned_window.pack(fill="both", expand=True)
+        self.paned_window.bind("<Configure>", self._on_paned_configure)
+
+        # Left console (Kafka Telemetry Producer)
+        left_card = ctk.CTkFrame(self.paned_window, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
+
+        left_hdr = ctk.CTkFrame(left_card, fg_color="transparent")
+        left_hdr.pack(fill="x", padx=12, pady=(8, 4))
 
         self._kafka_hdr_lbl = ctk.CTkLabel(
-            left_card,
+            left_hdr,
             text="Kafka Telemetry Stream (Producer)",
             font=F_HEAD,
             text_color=ACCENT,
             anchor="w",
         )
-        self._kafka_hdr_lbl.pack(fill="x", padx=12, pady=(8, 4))
+        self._kafka_hdr_lbl.pack(side="left", fill="x", expand=True)
+
+        self._pause_btn = ctk.CTkButton(
+            left_hdr,
+            text="⏸ Pause",
+            width=80,
+            height=26,
+            corner_radius=6,
+            fg_color=CARD,
+            hover_color=CARD_HI,
+            border_width=1,
+            border_color=BORDER,
+            text_color=YELLOW,
+            font=F_SMALL,
+            command=self.toggle_stream_pause,
+        )
+        self._pause_btn.pack(side="right")
+
+        self._clear_kafka_btn = ctk.CTkButton(
+            left_hdr,
+            text="🗑 Clear",
+            width=70,
+            height=26,
+            corner_radius=6,
+            fg_color=CARD,
+            hover_color=CARD_HI,
+            border_width=1,
+            border_color=BORDER,
+            text_color=FG,
+            font=F_SMALL,
+            command=self.clear_kafka_console,
+        )
+        self._clear_kafka_btn.pack(side="right", padx=(0, 6))
 
         self._kafka_log_box = ctk.CTkTextbox(
             left_card,
@@ -214,17 +252,52 @@ class LogsTab(ctk.CTkFrame):
         self._configure_telemetry_tags()
         self._insert_initial_telemetry_banner()
 
-        right_card = ctk.CTkFrame(panes, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
-        right_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        # Right console (Spark Structured Streaming Consumer)
+        right_card = ctk.CTkFrame(self.paned_window, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
+
+        right_hdr = ctk.CTkFrame(right_card, fg_color="transparent")
+        right_hdr.pack(fill="x", padx=12, pady=(8, 4))
 
         self._spark_hdr_lbl = ctk.CTkLabel(
-            right_card,
+            right_hdr,
             text="Spark Structured Streaming (Consumer / Q1-Q11)",
             font=F_HEAD,
             text_color=GREEN,
             anchor="w",
         )
-        self._spark_hdr_lbl.pack(fill="x", padx=12, pady=(8, 4))
+        self._spark_hdr_lbl.pack(side="left", fill="x", expand=True)
+
+        self._spark_pause_btn = ctk.CTkButton(
+            right_hdr,
+            text="⏸ Pause",
+            width=80,
+            height=26,
+            corner_radius=6,
+            fg_color=CARD,
+            hover_color=CARD_HI,
+            border_width=1,
+            border_color=BORDER,
+            text_color=YELLOW,
+            font=F_SMALL,
+            command=self.toggle_spark_pause,
+        )
+        self._spark_pause_btn.pack(side="right")
+
+        self._clear_spark_btn = ctk.CTkButton(
+            right_hdr,
+            text="🗑 Clear",
+            width=70,
+            height=26,
+            corner_radius=6,
+            fg_color=CARD,
+            hover_color=CARD_HI,
+            border_width=1,
+            border_color=BORDER,
+            text_color=FG,
+            font=F_SMALL,
+            command=self.clear_spark_console,
+        )
+        self._clear_spark_btn.pack(side="right", padx=(0, 6))
 
         self._spark_log_box = ctk.CTkTextbox(
             right_card,
@@ -238,6 +311,27 @@ class LogsTab(ctk.CTkFrame):
         )
         self._spark_log_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self._spark_log_box.configure(state="disabled")
+
+        # Add panes to PanedWindow with minimum size constraints (Left: 400px, Right: 250px)
+        self.paned_window.add(left_card, minsize=400, width=650)
+        self.paned_window.add(right_card, minsize=250, width=350)
+
+    def _on_paned_configure(self, event: Any) -> None:
+        if not self._sash_initialized and getattr(event, "width", 0) > 400:
+            self._set_initial_sash()
+
+    def _set_initial_sash(self) -> None:
+        """Position sash to default ~65% Left / ~35% Right ratio on first display."""
+        if self._sash_initialized:
+            return
+        try:
+            w = self.paned_window.winfo_width()
+            if w > 400:
+                target_x = max(400, min(int(w * 0.65), w - 250))
+                self.paned_window.sash_place(0, target_x, 0)
+                self._sash_initialized = True
+        except Exception:
+            pass
 
     def _configure_telemetry_tags(self) -> None:
         inner = getattr(self._kafka_log_box, "_textbox", None)
@@ -257,6 +351,60 @@ class LogsTab(ctk.CTkFrame):
             self._kafka_log_box.insert("end", msg)
         self._kafka_log_box.configure(state="disabled")
 
+    def toggle_stream_pause(self) -> None:
+        """Toggle freeze/pause state for the Kafka telemetry console."""
+        self.is_stream_paused = not self.is_stream_paused
+        self._update_pause_button_ui()
+
+    def _update_pause_button_ui(self) -> None:
+        if self.is_stream_paused:
+            self._pause_btn.configure(
+                text="▶ Resume",
+                fg_color=GREEN_D,
+                hover_color=GREEN,
+                text_color="#ffffff",
+            )
+        else:
+            self._pause_btn.configure(
+                text="⏸ Pause",
+                fg_color=CARD,
+                hover_color=CARD_HI,
+                text_color=YELLOW,
+            )
+
+    def toggle_spark_pause(self) -> None:
+        """Toggle freeze/pause state for the Spark consumer console."""
+        self.is_spark_paused = not self.is_spark_paused
+        self._update_spark_pause_button_ui()
+
+    def _update_spark_pause_button_ui(self) -> None:
+        if self.is_spark_paused:
+            self._spark_pause_btn.configure(
+                text="▶ Resume",
+                fg_color=GREEN_D,
+                hover_color=GREEN,
+                text_color="#ffffff",
+            )
+        else:
+            self._spark_pause_btn.configure(
+                text="⏸ Pause",
+                fg_color=CARD,
+                hover_color=CARD_HI,
+                text_color=YELLOW,
+            )
+
+    def clear_kafka_console(self) -> None:
+        """Clear Kafka Telemetry text box."""
+        self._kafka_log_box.configure(state="normal")
+        self._kafka_log_box.delete("1.0", "end")
+        self._kafka_log_box.configure(state="disabled")
+
+    def clear_spark_console(self) -> None:
+        """Clear Spark Streaming text box."""
+        self._spark_log_box.configure(state="normal")
+        self._spark_log_box.delete("1.0", "end")
+        self._spark_log_box.configure(state="disabled")
+
     def _drain_telemetry_events(self) -> None:
         events: List[Dict[str, Any]] = []
         for q in (self._event_queue, self._local_event_queue):
@@ -273,6 +421,10 @@ class LogsTab(ctk.CTkFrame):
                     break
 
         if not events:
+            return
+
+        # If stream is paused/frozen, drain queue to prevent lag buildup but do not mutate UI text
+        if self.is_stream_paused:
             return
 
         self._kafka_log_box.configure(state="normal")
@@ -300,6 +452,8 @@ class LogsTab(ctk.CTkFrame):
                 break
         if not batch:
             return
+        if self.is_spark_paused:
+            return
         box.configure(state="normal")
         box.insert("end", "".join(batch))
         line_count = int(box.index("end-1c").split(".")[0])
@@ -314,10 +468,8 @@ class LogsTab(ctk.CTkFrame):
         self._drain_stream_to_textbox(self._spark_streamer.queue, self._spark_log_box)
 
     def clear_consoles(self) -> None:
-        for box in (self._kafka_log_box, self._spark_log_box):
-            box.configure(state="normal")
-            box.delete("1.0", "end")
-            box.configure(state="disabled")
+        self.clear_kafka_console()
+        self.clear_spark_console()
 
     def stop_streamers(self) -> None:
         self._spark_streamer.stop()

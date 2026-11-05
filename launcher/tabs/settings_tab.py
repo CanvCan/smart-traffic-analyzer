@@ -1,7 +1,8 @@
 """
 launcher/tabs/settings_tab.py
 
-Dynamic metadata-driven settings form with dataclass validation and persistence via config_loader.save_config().
+Dynamic metadata-driven settings form with dataclass validation, factory defaults reset,
+and atomic persistence via config_loader.save_config().
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from launcher.theme import (
     BG,
     BORDER,
     CARD,
+    CARD_HI,
     F_BODY,
     F_HEAD,
     F_HELPER,
@@ -28,6 +30,7 @@ from launcher.theme import (
     GREEN,
     RED,
     SURFACE,
+    YELLOW,
 )
 from launcher.validation import discover_model_files, snap_resolution_to_block40
 from traffic_analyzer.infrastructure.config_loader import (
@@ -151,10 +154,28 @@ class SettingsTab(ctk.CTkFrame):
         self._save_msg_lbl = ctk.CTkLabel(bot_bar, text="", font=F_SMALL, text_color=GREEN)
         self._save_msg_lbl.pack(side="left", padx=28)
 
+        btn_box = ctk.CTkFrame(bot_bar, fg_color="transparent")
+        btn_box.pack(side="right", padx=28, pady=10)
+
         ctk.CTkButton(
-            bot_bar,
+            btn_box,
+            text="↺ Reset to Defaults",
+            width=154,
+            height=36,
+            corner_radius=8,
+            fg_color=CARD,
+            hover_color=CARD_HI,
+            border_width=1,
+            border_color=BORDER,
+            text_color=FG,
+            font=F_HEAD,
+            command=self.reset_to_defaults,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_box,
             text="Save Settings",
-            width=164,
+            width=154,
             height=36,
             corner_radius=8,
             fg_color=ACCENT,
@@ -162,7 +183,7 @@ class SettingsTab(ctk.CTkFrame):
             text_color="#ffffff",
             font=F_HEAD,
             command=lambda: self.save_settings_to_disk(quiet=False),
-        ).pack(side="right", padx=28, pady=10)
+        ).pack(side="left")
 
     def _build_model_header_controls(self, m_card: ctk.CTkFrame) -> None:
         ms = self._cfg.model
@@ -361,6 +382,36 @@ class SettingsTab(ctk.CTkFrame):
         self._save_msg_lbl.configure(text=text, text_color=color)
         if duration_ms > 0:
             self._msg_clear_after_id = self.after(duration_ms, self._clear_save_notification)
+
+    def reset_to_defaults(self) -> None:
+        """Reset all UI form inputs and sliders to default AppConfig values."""
+        default_cfg = AppConfig(camera=CameraConfig(), model=ModelConfig())
+        ms = default_cfg.model
+
+        self._model_var.set(ms.model_path)
+        self._device_var.set(ms.device)
+        self._thr_slider.set(max(0.10, min(0.90, ms.threshold)))
+        self._thr_val_lbl.configure(text=f"{ms.threshold:.2f}")
+
+        preset_map = {640: "640", 800: "800", 880: "880 (Recommended)", 1040: "1040", 1280: "1280"}
+        init_res_choice = preset_map.get(ms.resolution, "Custom...")
+        self._res_choice_var.set(init_res_choice)
+        self._custom_res_var.set(str(ms.resolution))
+        if init_res_choice == "Custom...":
+            self._custom_res_frame.pack(fill="x")
+        else:
+            self._custom_res_frame.pack_forget()
+
+        for key, _label, _desc, _val_type, _min_v, _max_v in SETTINGS_METADATA:
+            sec_name, attr_name = key.split(".", 1)
+            sec_obj = getattr(default_cfg, sec_name)
+            val = getattr(sec_obj, attr_name)
+            if key in self._field_vars:
+                self._field_vars[key].set(str(val))
+
+        msg = "Settings reset to factory defaults. Click Save to persist."
+        self._show_transient_notification(msg, color=YELLOW, duration_ms=4000)
+        self._on_status_message(msg, YELLOW)
 
     def save_settings_to_disk(self, quiet: bool = False) -> bool:
         try:

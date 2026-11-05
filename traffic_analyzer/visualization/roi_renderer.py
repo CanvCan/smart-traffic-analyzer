@@ -1,5 +1,6 @@
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 import math
+import tkinter as tk
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
@@ -129,7 +130,7 @@ class ROIRenderer:
                 return idx
         return None
 
-    def render_photo(
+    def render_pil(
         self,
         base_frame: np.ndarray,
         canvas_w: int,
@@ -142,7 +143,7 @@ class ROIRenderer:
         close_snap_active: bool,
         polygon_closed: bool,
         selected_lane_idx: Optional[int] = None,
-    ) -> ImageTk.PhotoImage:
+    ) -> Image.Image:
         self.update_projection(canvas_w, canvas_h)
         scaled_w = max(1, int(self.frame_w * self._scale))
         scaled_h = max(1, int(self.frame_h * self._scale))
@@ -168,7 +169,39 @@ class ROIRenderer:
         canvas_img[y1:y2, x1:x2] = resized[: y2 - y1, : x2 - x1]
 
         rgb = cv2.cvtColor(canvas_img, cv2.COLOR_BGR2RGB)
-        return ImageTk.PhotoImage(Image.fromarray(rgb))
+        return Image.fromarray(rgb)
+
+    def render_photo(
+        self,
+        base_frame: np.ndarray,
+        canvas_w: int,
+        canvas_h: int,
+        lanes: List[dict],
+        current_pts: List[List[int]],
+        hover_pt: Optional[Tuple[int, int]],
+        hover_idx: Optional[int],
+        drag_idx: Optional[int],
+        close_snap_active: bool,
+        polygon_closed: bool,
+        selected_lane_idx: Optional[int] = None,
+        master: Optional[tk.Misc] = None,
+    ) -> ImageTk.PhotoImage:
+        pil_img = self.render_pil(
+            base_frame=base_frame,
+            canvas_w=canvas_w,
+            canvas_h=canvas_h,
+            lanes=lanes,
+            current_pts=current_pts,
+            hover_pt=hover_pt,
+            hover_idx=hover_idx,
+            drag_idx=drag_idx,
+            close_snap_active=close_snap_active,
+            polygon_closed=polygon_closed,
+            selected_lane_idx=selected_lane_idx,
+        )
+        if master is not None:
+            return ImageTk.PhotoImage(pil_img, master=master)
+        return ImageTk.PhotoImage(pil_img)
 
     def _compose_frame(
         self,

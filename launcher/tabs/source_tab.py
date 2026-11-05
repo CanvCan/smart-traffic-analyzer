@@ -578,6 +578,7 @@ class SourceTab(ctk.CTkFrame):
                     camera_id=effective_source_id,
                     stream_url=item.path_or_url,
                     cameras_dir=self._cameras_dir,
+                    master=self,
                 )
             else:
                 roi_run(
@@ -585,6 +586,7 @@ class SourceTab(ctk.CTkFrame):
                     camera_id=effective_source_id,
                     cameras_dir=self._cameras_dir,
                     video_path=item.path_or_url,
+                    master=self,
                 )
         finally:
             self._select_row(self._selected_row)
